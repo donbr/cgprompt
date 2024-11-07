@@ -56,7 +56,7 @@ def step_03_fusion(model: any,
         logging.info(
             f"Refined concepts specified. Loading concepts from {config['refined_concepts_file']}.")
         id_2_concept = {i: str(c['concept']) for i, c in
-                        pd.read_csv('data/nlp/refined_concepts.tsv', sep='|', header=None,
+                        pd.read_csv('data/test/refined_concepts.tsv', sep='|', header=None,
                                     names=['id', 'concept'], index_col=0).iterrows()}
         logging.info(
             f"Loaded {len(id_2_concept)} refined concepts, e.g. {', '.join(list(id_2_concept.values())[:3])}")

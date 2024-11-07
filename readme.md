@@ -5,6 +5,21 @@ Graphusion is a pipeline that extract Knowledge Graph triples from text.
 ![Architecture](fig_architecture.png)
 
 
+## CITATION
+
+- I have deep respect for the creators of this repo and authors of the related AGENTiGraph paper.
+- The DiscoverAI YouTube channel also had an interesting video highlighting the various use cases and diverse backgrounds of the authors of the paper:  https://www.youtube.com/watch?v=tB5s7Q-8DsE
+
+@misc{zhao2024agentigraphinteractiveknowledgegraph,
+      title={AGENTiGraph: An Interactive Knowledge Graph Platform for LLM-based Chatbots Utilizing Private Data}, 
+      author={Xinjie Zhao and Moritz Blum and Rui Yang and Boming Yang and Luis Márquez Carpintero and Mónica Pina-Navarro and Tony Wang and Xin Li and Huitao Li and Yanran Fu and Rongrong Wang and Juntao Zhang and Irene Li},
+      year={2024},
+      eprint={2410.11531},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2410.11531}, 
+}
+
 ## Setup
 Create a new conda environment and install the required packages:
 ```

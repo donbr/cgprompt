@@ -1,0 +1,4082 @@
+# Repository URL: https://github.com/donbr/cgprompt
+
+### File: .gitignore
+**Type:** txt
+**Size:** 69 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+private_config.json
+.idea
+.DS_Store
+data/*
+!data/test
+output
+.venv/
+
+
+```
+
+### File: .python-version
+**Type:** txt
+**Size:** 7 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+3.11.8
+
+```
+
+### File: clustering.py
+**Type:** python
+**Size:** 915 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+from transformers import BertModel, AutoTokenizer, AutoModelForMaskedLM
+import torch
+
+tokenizer = AutoTokenizer.from_pretrained("cl-tohoku/bert-base-japanese")
+#model = BertModel.from_pretrained("data/japanese_med/ja_med_bert/checkpoint-10")
+model = AutoModelForMaskedLM.from_pretrained("data/japanese_med/ja_med_bert/checkpoint-10")
+
+
+def get_embedding(model, tokenizer, text):
+    inputs = tokenizer(text, return_tensors='pt')
+
+    # Get embeddings
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Get the last hidden states
+    last_hidden_states = outputs.logits
+
+    # Compute sentence embedding by averaging over token embeddings
+    return last_hidden_states.mean(dim=1).squeeze()
+
+concepts = []
+embeddings = []
+
+for line in open('data/japanese_med/concepts.tsv', 'r'):
+    concept = line.strip()
+    concepts.append(concept)
+    embeddings.append(get_embedding(model, tokenizer, concept))
+
+```
+
+### File: fig_architecture.png
+**Type:** png
+**Size:** 244197 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: graphs.py
+**Type:** python
+**Size:** 3558 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+from typing import List, Tuple, Dict
+
+import networkx as nx
+
+TRIPLE_VERB_TEMPLATE = "({head},{relation},{tail})\n"
+
+
+def get_nx_graph(triples: List[Tuple[str, str, str]], concept_2_id, relation_2_id) -> nx.DiGraph:
+    """
+    Create a NetworkX DiGraph from a list of triples.
+    """
+    graph = nx.DiGraph()
+    for triple in triples:
+        graph.add_edge(concept_2_id[triple[0]], concept_2_id[triple[2]],
+                       relation=relation_2_id[triple[1]])
+    return graph
+
+
+def get_neighbors(graph: nx.DiGraph, concept: str, concept_2_id: Dict[str, int],
+                  id_2_concept: Dict[int, str], mode='bidirectional') -> List[str]:
+    # Get the concept ID from its name
+    if concept not in concept_2_id:
+        return []
+
+    concept_id = concept_2_id[concept]
+    if concept_id not in graph:
+        return []
+
+    if mode == 'bidirectional':
+        # Get all neighbors (successors and predecessors)
+        neighbors = set(graph.predecessors(concept_id)).union(set(graph.successors(concept_id)))
+    elif mode == 'outgoing':
+        neighbors = set(graph.successors(concept_id))
+    elif mode == 'ingoing':
+        neighbors = set(graph.predecessors(concept_id))
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+
+    # Return the names of the neighbors
+    neighbor_list = [id_2_concept[id] for id in neighbors]
+    return neighbor_list
+
+
+def get_2hop_neighbors(graph: nx.DiGraph, concept: str, concept_2_id: Dict[str, int],
+                       id_2_concept: Dict[int, str]) -> List[str]:
+    # Get the concept ID from its name
+    if concept not in concept_2_id:
+        return []
+    concept_id = concept_2_id[concept]
+    if concept_id not in graph:
+        return []
+
+    # Get 1-hop neighbors (successors and predecessors)
+    neighbors_1hop = set(get_neighbors(graph, concept, concept_2_id, id_2_concept))
+
+    # Initialize a set for 2-hop neighbors
+    neighbors_2hop = set()
+
+    # Find 2-hop neighbors by looking at neighbors of 1-hop neighbors
+    for neighbor in neighbors_1hop:
+        neighbors_2hop.update(set(graph.predecessors(concept_2_id[neighbor])))
+        neighbors_2hop.update(set(graph.successors(concept_2_id[neighbor])))
+
+    # Remove the original concept and 1-hop neighbors from the 2-hop neighbors set
+    neighbors_2hop.discard(concept_id)
+    neighbors_2hop -= neighbors_1hop
+
+    # Return the names of the 2-hop neighbors
+    neighbor_list = [id_2_concept[id] for id in neighbors_2hop]
+    return neighbor_list
+
+
+def verbalize_neighbors_triples_from_graph(graph: nx.DiGraph, concept, concept_2_id, id_2_concept,
+                                           unifyed_relation='Is-a-Prerequisite-of', mode='outgoing') -> str:
+    neighbors = get_neighbors(graph, concept, concept_2_id, id_2_concept, mode=mode)
+    if len(neighbors) == 0:
+        return "None"
+    res_str = ''
+    for neighbor in neighbors:
+        res_str += TRIPLE_VERB_TEMPLATE.format(head=concept, relation=unifyed_relation,
+                                               tail=neighbor)
+
+    return res_str
+
+
+def verbalize_neighbors_triples_from_triples(graph: List[Tuple[str, str, str]], concept: str) -> str:
+    """
+    Get the triples that connect a concept to its neighbors in the graph.
+    """
+    if len(graph) == 0:
+        return "None"
+    res_str = ''
+    for triple in graph:
+        if concept == triple[0] or concept == triple[2]:
+            res_str += TRIPLE_VERB_TEMPLATE.format(head=triple[0], relation=triple[1],
+                                                   tail=triple[2])
+    return res_str
+
+```
+
+### File: main.py
+**Type:** python
+**Size:** 9282 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+import os
+import json
+import logging
+from models import KnowledgeGraphLLM
+from argparse import ArgumentParser
+
+from step_01_concept_extraction import step_01_concept_extraction
+from step_02_triple_extraction import step_02_triple_extraction
+from step_03_fusion import step_03_fusion
+
+if __name__ == "__main__":
+    argparse = ArgumentParser()
+    argparse.add_argument("--run_name", type=str, default="test",
+                          help="Assign a name to this run. The name will be used to, e.g., determine "
+                               "the output directory. We recommend to use unique and descriptive names "
+                               "to distinguish the results of different models.")
+    argparse.add_argument("--dataset", type=str,
+                          required=True,
+                          help="Name of the dataset. Is used to, e.g., determine the input directory.")
+    argparse.add_argument("--relation_definitions_file", type=str,
+                          required=True,
+                          help="Path to the relation definitions file. The file should be a JSON file, "
+                               "where the keys are the relation types and the values are dictionaries "
+                               "with the following keys: 'label', 'description'.")
+
+    # these arguments allow to provide the data from the previous steps directly
+    # instead of running these steps
+    argparse.add_argument("--input_json_file", type=str, default="",
+                          help="Path to the input file. Step 1 will be skipped if this argument "
+                               "is provided. The input file should be a JSON file with the "
+                               "following structure: "
+                               "{'concept1': [{'abstract': ['abstract1', ...], 'label: 0},...} "
+                               "E.g. data/test/concept_abstracts.json is the associated file created"
+                               "durin step 1 in the test run.")
+    argparse.add_argument("--input_triple_file", type=str, default="",
+                          help="Path to the input file storing the triples in the format as outputted "
+                               "by the candidate triple extraction model. Step 1 and step 2 will "
+                               "be skipped if this argument is provided.")
+
+    # these arguments allow to configure the LLM model
+    argparse.add_argument("--model", type=str, default="gpt-3.5-turbo",
+                          help="Name of the LLM that should be used for the KG construction.")
+    argparse.add_argument("--max_resp_tok", type=int, default=200,
+                          help="Maximum number of tokens in the response of the candidate triple "
+                               "extraction model.")
+    argparse.add_argument("--max_input_char", type=int, default=10000,
+                          help="Maximum number of characters in the input of the candidate triple "
+                               "extraction model.")
+    argparse.add_argument("--prompt_tpextraction", type=str,
+                          default="prompts/prompt_tpextraction.txt",
+                          help="Path to the prompt template for step 1.")
+    argparse.add_argument("--prompt_fusion", type=str, default="prompts/prompt_fusion.txt",
+                          help="Path to the prompt template for fusion.")
+
+    # these arguments allow to provide additional data
+    argparse.add_argument("--gold_concept_file", type=str,
+                          default="",
+                          help="Path to a file with concepts that are provided by experts. "
+                               "The file should be a tsv file, each row should look like: "
+                               "'concept id | concept")
+    argparse.add_argument('--refined_concepts_file', type=str,
+                          default="True",
+                          help='In step 2 (candidate triple extraction) many new concepts might be '
+                               'added. Instead of using these, concepts can be provided through this '
+                               'parameter. Specify the path to a file with refined concepts '
+                               'of the graph. The file should be a tsv file, each row should look like: '
+                               '"concept id | concept name"')
+    argparse.add_argument("--annotated_graph_file", type=str,
+                          default="data/prerequisite_of_graph.tsv",
+                          help="Path to the annotated graph.")
+
+    # language settings
+    argparse.add_argument('--language', type=str, default='english',
+                          help='Language of the abstracts.')
+
+    # logging
+    argparse.add_argument('--verbose', action='store_true',
+                          help='Print additional information to the console.')
+
+    # Parse the arguments
+    args = argparse.parse_args()
+    VERBOSE = args.verbose
+    RUN_NAME = args.run_name
+    RELATION_DEFINITIONS_FILE = args.relation_definitions_file
+    MODEL_NAME = args.model
+    MAX_RESPONSE_TOKEN_LENGTH_CANDIDATE_TRIPLE_EXTRACTION = args.max_resp_tok
+    PROMPT_TPEXTRACTION_FILE = args.prompt_tpextraction
+    PROMPT_FUSION_FILE = args.prompt_fusion
+
+    # --- Setup ---
+    # initialize logger
+    if VERBOSE:
+        logging_level = logging.DEBUG
+    else:
+        logging_level = logging.INFO
+    logging.basicConfig(level=logging_level, format='%(asctime)s - %(levelname)s - %(message)s',
+                        datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.info(f"RUN_NAME: {RUN_NAME}")
+
+    # Prepare the output directory
+    if not os.path.exists('output'):
+        os.makedirs('output')
+    if not os.path.exists(f'output/{RUN_NAME}'):
+        os.makedirs(f'output/{RUN_NAME}')
+
+    # write config to output directory
+    config = args.__dict__
+    json.dump(config, open(f'output/{RUN_NAME}/config.json', 'w'), indent=4)
+
+    # assign output file names if not provided
+    if args.input_json_file == "":
+        CONCEPT_EXTRACTION_OUTPUT_FILE = f'output/{RUN_NAME}/concepts.tsv'
+        CONCEPT_ABSTRACTS_OUTPUT_FILE = f'output/{RUN_NAME}/concept_abstracts.json'
+    else:
+        CONCEPT_ABSTRACTS_OUTPUT_FILE = args.input_json_file
+        logging.info(
+            f"Using provided input file: {CONCEPT_ABSTRACTS_OUTPUT_FILE} "
+            f"(skipping step 1 - concept extraction).")
+
+    if args.input_triple_file == "":
+        TRIPLE_EXTRACTION_OUTPUT_FILE = f'output/{RUN_NAME}/step-02.jsonl'
+    else:
+        TRIPLE_EXTRACTION_OUTPUT_FILE = args.input_triple_file
+        logging.info(
+            f"Using provided input file: {TRIPLE_EXTRACTION_OUTPUT_FILE} "
+            f"(skipping step 2 - triple extraction).")
+
+    # output file of the pipeline
+    FUSION_OUTPUT_FILE = f'output/{RUN_NAME}/step-03.jsonl'
+
+    # Load the relation definitions
+    relation_def = json.load(open(RELATION_DEFINITIONS_FILE, 'r'))
+    relation_types = list(relation_def.keys())
+    relation_2_id = {v: k for k, v in enumerate(relation_types)}
+    id_2_relation = {k: v for k, v in enumerate(relation_types)}
+
+    # Configure API keys
+    # os.environ["OPENAI_API_KEY"] = json.load(open('private_config.json'))['OPENAI_API_KEY']
+    os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+
+    # init the LLM
+    model = KnowledgeGraphLLM(model_name=MODEL_NAME,
+                              max_tokens=MAX_RESPONSE_TOKEN_LENGTH_CANDIDATE_TRIPLE_EXTRACTION)
+
+    # --- Pipeline ---
+    if args.input_json_file == "" and args.input_triple_file == "":
+        # load raw text data
+        if len(os.listdir(f'data/{args.dataset}/raw/')) == 0:
+            logging.error(f"No input text files found in data/{args.dataset}/raw/.")
+        texts = []
+        for file in os.listdir(f'data/{args.dataset}/raw/'):
+            if file.endswith('.txt'):
+                logging.info(f"Loading file: {file}")
+                with open(f'data/{args.dataset}/raw/{file}', 'r', encoding="utf-8") as f:
+                    for line in f:
+                        texts.append(line)
+
+        # extract concepts
+        step_01_concept_extraction(texts=texts,
+                                   concept_extraction_output_file=CONCEPT_EXTRACTION_OUTPUT_FILE,
+                                   concept_abstracts_output_file=CONCEPT_ABSTRACTS_OUTPUT_FILE,
+                                   logging=logging,
+                                   config=config)
+
+    # Load the abstract data (either created in step 1 or provided as input)
+    data = json.load(open(CONCEPT_ABSTRACTS_OUTPUT_FILE, 'r', encoding="utf-8"))
+
+    if args.input_triple_file == "":
+        step_02_triple_extraction(model=model,
+                                  output_file=TRIPLE_EXTRACTION_OUTPUT_FILE,
+                                  relation_def=relation_def,
+                                  data=data,
+                                  logging=logging,
+                                  config=config)
+
+    step_03_fusion(model=model,
+                   input_file=TRIPLE_EXTRACTION_OUTPUT_FILE,
+                   output_file=FUSION_OUTPUT_FILE,
+                   relation_def=relation_def,
+                   relation_2_id=relation_2_id,
+                   data=data,
+                   logging=logging,
+                   config=config)
+
+```
+
+### File: med_bert.py
+**Type:** python
+**Size:** 2955 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[29]:
+
+
+from tqdm import tqdm
+import os
+import json
+from datasets import Dataset
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling, AutoModelForMaskedLM, AutoModel, \
+    TrainingArguments, Trainer
+
+"""
+d = {'text': [], 'filename': []}
+
+for file in tqdm(os.listdir('data/japanese_med/japanese_crawl')):
+    try:
+        with open(os.path.join('data/japanese_med/japanese_crawl', file), 'r') as f:
+            text = f.read()
+            d['text'].append(text) 
+            d['filename'].append(file)
+    except Exception as e:
+        print(e)
+json.dump(d, open('data/japanese_med/raw.json', 'w'), ensure_ascii=False, indent=2)
+"""
+
+ds = Dataset.from_dict(json.load(open('data/japanese_med/raw.json')))
+ds = ds.train_test_split(test_size=0.2)
+
+tokenizer = AutoTokenizer.from_pretrained("cl-tohoku/bert-base-japanese")
+
+
+def preprocess_function(examples):
+    return tokenizer(examples["text"])
+
+
+tokenized_ds = ds.map(
+    preprocess_function,
+    batched=True,
+    num_proc=4,
+    remove_columns=ds["train"].column_names,
+)
+
+block_size = 512
+
+
+def group_texts(examples):
+    # Concatenate all texts.
+    concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+    total_length = len(concatenated_examples[list(examples.keys())[0]])
+    # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+    # customize this part to your needs.
+    if total_length >= block_size:
+        total_length = (total_length // block_size) * block_size
+    # Split by chunks of block_size.
+    result = {
+        k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
+        for k, t in concatenated_examples.items()
+    }
+    return result
+
+
+lm_dataset = tokenized_ds.map(group_texts, batched=True, num_proc=4)
+model = AutoModelForMaskedLM.from_pretrained("cl-tohoku/bert-base-japanese")
+
+tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+
+
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+
+
+
+
+training_args = TrainingArguments(
+    output_dir="data/japanese_med/ja_med_bert",
+    eval_strategy="epoch",
+    learning_rate=1e-5,
+    num_train_epochs=10,
+    weight_decay=0.01,
+    push_to_hub=False,
+    logging_steps=1,
+    save_strategy="epoch",
+    save_total_limit=3,
+    per_device_train_batch_size=64
+)
+
+# Number of samples you want to use for testing
+debug = False
+if debug:
+    train_dataset = lm_dataset["train"].select(range(100))  # First 100 samples
+    eval_dataset = lm_dataset["test"].select(range(50))  # First 50 samples
+else:
+    train_dataset = lm_dataset["train"]
+    eval_dataset = lm_dataset["test"]
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    #train_dataset=small_train_dataset,
+    #eval_dataset=small_eval_dataset,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    data_collator=data_collator,
+)
+
+trainer.train()
+
+```
+
+### File: models.py
+**Type:** python
+**Size:** 1623 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+from typing_extensions import TypedDict, Annotated, List
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from typing import Optional, Any
+from langchain_core.language_models.llms import LLM
+import json
+
+
+class Triple(TypedDict):
+    s: Annotated[str, ..., "Subject of the extracted Knowledge Graph Triple"]
+    p: Annotated[str, ..., "Relation of the extracted Knowledge Graph Triple"]
+    o: Annotated[str, ..., "Object of the extracted Knowledge Graph Triple"]
+
+
+class Triples(BaseModel):
+    triples: List[Triple]
+
+
+class KnowledgeGraphLLM(LLM):
+    model_name: str
+    max_tokens: int
+
+    @property
+    def _llm_type(self) -> str:
+        return f"Candidate Triple Extraction Chain based on {self.model_name}"
+
+    def _call(
+            self,
+            prompt: str,
+            stop: Optional[List[str]] = None,
+            run_manager: Optional[CallbackManagerForLLMRun] = None,
+            **kwargs: Any,
+    ) -> str:
+        model = ChatOpenAI(model=self.model_name, max_tokens=self.max_tokens)
+        model = model.with_structured_output(Triples)
+        stream_response = model.stream(prompt)
+        response = self.get_last_chunk(stream_response)
+
+        # if the object does not habe the attribute triples
+        if not hasattr(response, 'triples'):
+            return "None"
+        return json.dumps(response.triples).replace('\n', '')
+
+    @staticmethod
+    def get_last_chunk(stream_response):
+        last_chunk = None
+        for chunk in stream_response:
+            last_chunk = chunk
+        return last_chunk
+```
+
+### File: preprocess.ipynb
+**Type:** json
+**Size:** 1907 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+{
+ "cells": [
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-10T02:37:02.572253Z",
+     "start_time": "2024-09-10T02:37:02.320080Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "import pandas as pd",
+   "id": "400c682aca37de41",
+   "outputs": [],
+   "execution_count": 2
+  },
+  {
+   "cell_type": "code",
+   "id": "initial_id",
+   "metadata": {
+    "collapsed": true,
+    "ExecuteTime": {
+     "end_time": "2024-09-10T02:37:03.123198Z",
+     "start_time": "2024-09-10T02:37:03.100284Z"
+    }
+   },
+   "source": [
+    "acl_files = [\n",
+    "        'data/nlp/raw/2017_ACL.csv',\n",
+    "        'data/nlp/raw/2018_ACL.csv',\n",
+    "        'data/nlp/raw/2019_ACL.csv',\n",
+    "        'data/nlp/raw/2020_ACL.csv',\n",
+    "        'data/nlp/raw/2021_ACL.csv',\n",
+    "        'data/nlp/raw/2022_ACL.csv',\n",
+    "        'data/nlp/raw/2023_ACL.csv'\n",
+    "    ]\n",
+    "\n",
+    "acl_data = pd.concat([pd.read_csv(file) for file in acl_files], ignore_index=True)\n",
+    "texts = acl_data[\"abstract\"].astype(\"str\").to_list()\n",
+    "\n",
+    "with open('data/nlp/raw/abstracts.txt', 'w') as f:\n",
+    "        texts = [text.replace('\\n', ' ') for text in texts]\n",
+    "        for text in texts:\n",
+    "                f.write(text + '\\n')"
+   ],
+   "outputs": [],
+   "execution_count": 3
+  },
+  {
+   "metadata": {},
+   "cell_type": "code",
+   "outputs": [],
+   "execution_count": null,
+   "source": "",
+   "id": "87477eb3f607e827"
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 2
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython2",
+   "version": "2.7.6"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+
+```
+
+### File: readme.md
+**Type:** markdown
+**Size:** 5239 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+# Graphusion 
+
+Graphusion is a pipeline that extract Knowledge Graph triples from text.
+
+![Architecture](fig_architecture.png)
+
+
+## Setup
+Create a new conda environment and install the required packages:
+```
+conda create -n graphusion python=3.10
+conda activate graphusion
+pip install -r requirements.txt
+```
+
+
+## Usage
+The pipeline processes text files from the `data/[dataset_name]/raw` directory (e.g., `data/test/raw`) as input. 
+Furthermore, the pipeline requires relation definitions as a JSON file. This file defines the relations and 
+provides a description of the relation (e.g., `data/test/relation_types.json`). In addition, some information can be 
+provided to improve the results (`--gold_concept_file`, `--refined_concepts_file`, `--annotated_graph_file`)
+or to skip pipeline steps (`--input_json_file`, `--input_triple_file`). See parameters below.
+
+The ACL data is originally in a csv format. Therefore, we provide the notebook `preprocess.ipynb` to convert the 
+data into the required text files.
+
+The pipeline can be run using the following command:
+
+```
+usage: main.py [-h] [--run_name RUN_NAME] --dataset DATASET --relation_definitions_file RELATION_DEFINITIONS_FILE [--input_json_file INPUT_JSON_FILE]
+               [--input_triple_file INPUT_TRIPLE_FILE] [--model MODEL] [--max_resp_tok MAX_RESP_TOK] [--max_input_char MAX_INPUT_CHAR]
+               [--prompt_tpextraction PROMPT_TPEXTRACTION] [--prompt_fusion PROMPT_FUSION] [--gold_concept_file GOLD_CONCEPT_FILE]
+               [--refined_concepts_file REFINED_CONCEPTS_FILE] [--annotated_graph_file ANNOTATED_GRAPH_FILE] [--language LANGUAGE] [--verbose]
+
+options:
+  -h, --help            show this help message and exit
+  --run_name RUN_NAME   Assign a name to this run. The name will be used to, e.g., determine the output directory. We recommend to use unique and descriptive names to
+                        distinguish the results of different models.
+  --dataset DATASET     Name of the dataset. Is used to, e.g., determine the input directory.
+  --relation_definitions_file RELATION_DEFINITIONS_FILE
+                        Path to the relation definitions file. The file should be a JSON file, where the keys are the relation types and the values are dictionaries with the
+                        following keys: 'label', 'description'.
+  --input_json_file INPUT_JSON_FILE
+                        Path to the input file. Step 1 will be skipped if this argument is provided. The input file should be a JSON file with the following structure:
+                        {'concept1': [{'abstract': ['abstract1', ...], 'label: 0},...} E.g. data/test/concept_abstracts.json is the associated file createddurin step 1 in the
+                        test run.
+  --input_triple_file INPUT_TRIPLE_FILE
+                        Path to the input file storing the triples in the format as outputted by the candidate triple extraction model. Step 1 and step 2 will be skipped if
+                        this argument is provided.
+  --model MODEL         Name of the LLM that should be used for the KG construction.
+  --max_resp_tok MAX_RESP_TOK
+                        Maximum number of tokens in the response of the candidate triple extraction model.
+  --max_input_char MAX_INPUT_CHAR
+                        Maximum number of characters in the input of the candidate triple extraction model.
+  --prompt_tpextraction PROMPT_TPEXTRACTION
+                        Path to the prompt template for step 1.
+  --prompt_fusion PROMPT_FUSION
+                        Path to the prompt template for fusion.
+  --gold_concept_file GOLD_CONCEPT_FILE
+                        Path to a file with concepts that are provided by experts. The file should be a tsv file, each row should look like: 'concept id | concept
+  --refined_concepts_file REFINED_CONCEPTS_FILE
+                        In step 2 (candidate triple extraction) many new concepts might be added. Instead of using these, concepts can be provided through this parameter.
+                        Specify the path to a file with refined concepts of the graph. The file should be a tsv file, each row should look like: "concept id | concept name"
+  --annotated_graph_file ANNOTATED_GRAPH_FILE
+                        Path to the annotated graph.
+  --language LANGUAGE   Language of the abstracts.
+  --verbose             Print additional information to the console.
+```
+
+The output of the pipeline are the following files: 
+- `concept_abstracts`: The json file mapping the extracted concepts to their abstracts.
+- `step-02.jsonl`: The extracted triples in linewise JSON format.
+- `step-03.jsonl`: The fused triples in linewise JSON format.
+
+
+## Example 
+To run the full pipeline on a small sample (`test`) dataset, call: 
+`python main.py --run_name "test" --dataset "test" --relation_definitions_file "data/test/relation_types.json" --gold_concept_file "data/test/gold_concepts.tsv" --refined_concepts_file "data/test/refined_concepts.tsv"`
+
+To reproduce the Graphusion results on the ACL (`nlp) dataset, call:
+`python main.py --run_name "acl" --dataset "nlp" --relation_definitions_file "data/nlp/relation_types.json" --gold_concept_file "data/nlp/gold_concepts.tsv" --refined_concepts_file "data/nlp/refined_concepts.tsv"`
+```
+
+### File: requirements.txt
+**Type:** txt
+**Size:** 189 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+openai
+notebook
+langchain
+langchain-openai
+pandas
+networkx[default]
+accelerate
+datasets
+transformers
+fugashi
+ipadic
+tiktoken
+umap
+scikit-learn
+bertopic
+sentence-transformers
+nltk
+fuzzywuzzy
+```
+
+### File: step_01_concept_extraction.py
+**Type:** python
+**Size:** 6977 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+import os.path
+
+import nltk
+import json
+from tqdm import tqdm
+import pandas as pd
+from umap import UMAP
+from bertopic import BERTopic
+from sklearn.feature_extraction.text import CountVectorizer
+from bertopic.vectorizers import ClassTfidfTransformer
+from bertopic.representation import KeyBERTInspired
+from sentence_transformers import SentenceTransformer
+from nltk.data import find
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import wordnet
+from fuzzywuzzy import fuzz
+
+
+def download_if_needed(package):
+    """
+    Downloads the specified NLTK package if it is not already downloaded.
+    """
+    try:
+        find(f"corpora/{package}")
+    except LookupError:
+        nltk.download(package)
+
+
+def step_01_concept_extraction(texts: list[str],
+                               concept_extraction_output_file: str,
+                               concept_abstracts_output_file: str,
+                               logging: any,
+                               stop_words: list[str] = None,
+                               config: dict[str, any] = None):
+    """
+    Step 1: Concept Extraction
+    Extracts concepts from the texts. The output is an output file listing all concepts
+    and an output json file listing the abstracts per concept.
+
+    :param texts: the texts to extract concepts from
+    :param concept_extraction_output_file: the file to write the extracted concepts to
+    :param concept_abstracts_output_file: the file to write the abstracts per concept to
+    :param logging: the logger
+    :param stop_words: the stop words to use
+    :param config: the configuration can be provided with the following keys: language, gold_concept_file
+    :return: None
+    """
+    download_if_needed("wordnet")
+    download_if_needed("omw-1.4")
+    logging.info("Step 1: Starting concept extraction.")
+
+    # set default config values if not provided
+    if 'language' not in config:
+        config['language'] = "english"
+    if 'gold_concept_file' not in config:
+        config['gold_concept_file'] = ""
+
+    # create BERTopic Extractor
+    # language dependent part
+    if config['language'] == "english":
+        vectorizer_model = CountVectorizer(ngram_range=(2, 4),
+                                           stop_words="english" if stop_words is None else stop_words)
+        sentence_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+    else:
+        logging.info(f"Using language {config['language']}.")
+        logging.info("Language not yet supported. Exiting.")
+        exit(0)
+    # language independent part
+    umap_model = UMAP(n_neighbors=20, n_components=50, metric="cosine", min_dist=0.0, random_state=37)
+    ctfidf_model = ClassTfidfTransformer(reduce_frequent_words=False)
+    representation_model = KeyBERTInspired()
+
+    topic_model = BERTopic(verbose=True,
+                           umap_model=umap_model,
+                           ctfidf_model=ctfidf_model,
+                           vectorizer_model=vectorizer_model,
+                           embedding_model=sentence_model,
+                           representation_model=representation_model,
+                           nr_topics=50,
+                           low_memory=True,
+                           calculate_probabilities=False)
+
+    topics, _ = topic_model.fit_transform(texts)
+    all_topics = topic_model.get_topics()
+
+    extracted_concepts = []
+    for topic_num, keywords in all_topics.items():
+        if topic_num != -1:
+            topic_keywords = [word for word, value in keywords]
+            extracted_concepts.extend(topic_keywords)
+
+    # remove duplicates
+    extracted_concepts = list(set(keyword.lower() for keyword in extracted_concepts))
+
+    # write extracted concepts to file
+    with open(concept_extraction_output_file, "w") as f:
+        for id, concept in enumerate(extracted_concepts, 1):
+            f.write(f"{id}|{concept}\n")
+    logging.info(f"Concepts written to {concept_extraction_output_file}.")
+
+    lemmatizer = WordNetLemmatizer()
+
+    def singularize_concept(concept):
+        words = concept.split()
+        singular_words = [lemmatizer.lemmatize(word, wordnet.NOUN) for word in words]
+        return ' '.join(singular_words)
+
+    # singularize concepts
+    extracted_concept = [singularize_concept(concept) for concept in extracted_concepts]
+
+    df_concepts = pd.DataFrame(extracted_concept, columns=["concept"])
+    df_concepts["label"] = 0
+
+    if config['gold_concept_file'] != "":
+        if os.path.exists(config['gold_concept_file']):
+            gold_concepts = pd.read_csv(config['gold_concept_file'], delimiter="|", header=None)
+            gold_concepts = gold_concepts[1].tolist()
+
+            # singularize concepts
+            gold_concept = [singularize_concept(concept) for concept in gold_concepts]
+
+            # convert to lowercase
+            gold_concept = [concept.lower() for concept in gold_concept]
+
+            df_gold_concepts = pd.DataFrame(gold_concept, columns=["concept"])
+            df_gold_concepts["label"] = 1
+
+            df_concepts = pd.concat([df_concepts, df_gold_concepts])
+            df_concepts = df_concepts.sort_values(by="label")
+        else:
+            logging.info(f"Gold concept file {config['gold_concept_file']} not found. Skipping.")
+
+    df_concepts = df_concepts.drop_duplicates(subset="concept", keep="first")
+
+    # reduce the text dataset to only texts containing the concepts
+    def filter_abstracts_by_term(term, abstracts, threshold=70):
+        filtered_abstracts = []
+        for abstract in abstracts:
+            if isinstance(abstract, str):
+                if fuzz.partial_ratio(term.lower(), abstract.lower()) >= threshold:
+                    filtered_abstracts.append(abstract)
+        return filtered_abstracts
+
+    concept_abstracts = {}
+    for index, row in tqdm(df_concepts.iterrows(), desc="Processing concepts",
+                           total=df_concepts.shape[0]):
+        concept = row["concept"]
+        label = row["label"]
+        filtered_abstracts = filter_abstracts_by_term(concept, texts)
+        concept_abstracts[concept] = {
+            "abstracts": filtered_abstracts,
+            "label": label
+        }
+
+    with open(concept_abstracts_output_file, 'w', encoding='utf-8') as f:
+        json.dump(concept_abstracts, f, ensure_ascii=False, indent=4)
+    logging.info(f"Abstracts written to {concept_abstracts_output_file}.")
+
+    logging.info("Step 1: Candidate Triple Extraction completed.")
+    logging.info(f"Number of concepts extracted through BERTopic: {len(extracted_concept)}")
+
+    if config['gold_concept_file'] != "":
+        label_0_count = sum(1 for details in concept_abstracts.values() if details['label'] == 0)
+        logging.info(f"Number of concepts added through BERTopic: {label_0_count}")
+
+    empty_abstracts_count = sum(1 for details in concept_abstracts.values() if not details['abstracts'])
+    logging.info(f"Number of concepts with empty filtered_abstracts: {empty_abstracts_count}")
+
+```
+
+### File: step_01_concept_extraction_alternative.py
+**Type:** python
+**Size:** 2387 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+import json
+import os
+import random
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from tqdm import tqdm
+
+
+# TODO Experimental: Not yet fully implemented and tested
+
+
+def step_00(model: any,
+            raw_text_dir: str,
+            output_file: str,
+            relation_def: dict[str, dict[str, str]],
+            logging: any,
+            config: dict[str, any]):
+    """
+    Extract candidate concepts from the data and write them to the output file.
+    """
+    #logging.info("Step 0: Starting candidate concept extraction.")
+    # iterate over files in raw_text_dir
+
+    # todo these will be function parameters
+    num_samples = 1000
+    model = "gpt-3.5-turbo"
+    max_response_tokens = 200
+    os.environ["OPENAI_API_KEY"] = json.load(open('private_config.json'))['OPENAI_API_KEY']
+    model = ChatOpenAI(model=model, max_tokens=max_response_tokens)
+
+    candidate_concepts = set()
+    input_texts = json.load(open('data/japanese_med/raw.json'))['text']
+
+    # Ensure there are enough elements in the list to sample from
+    if len(input_texts) < num_samples:
+        print(f"The list contains fewer than {num_samples} abstracts.")
+    else:
+        # Get random samples from the list
+        input_texts = random.sample(input_texts, num_samples)
+
+    prompt_template_txt = open(config['prompt_step_00']).read()
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", "You are a knowledge graph builder."),
+        ("user", prompt_template_txt)
+    ])
+
+    for text in tqdm(input_texts):
+        p = prompt_template.invoke(
+            {"abstracts": text[:config['max_input_char']],
+             "relation_definitions": '\n'.join(
+                 [f"{rel_type}: {rel_data['description']}" for rel_type, rel_data in
+                  relation_def.items()])}
+        )
+
+        # query the model
+        o = model.invoke(p)
+        concepts = [x.strip().lower() for x in o.content.split(',')]
+        candidate_concepts = candidate_concepts.union(set(concepts))
+
+    with open(output_file, 'w') as f:
+        for concept in candidate_concepts:
+            f.write(concept + '\n')
+
+
+if __name__ == '__main__':
+    config = {'prompt_step_00': 'prompts/prompt_step_00.txt',
+              'max_input_char': 10000}
+    step_00(None, 'data/japanese_med/raw', 'output/japanese_med/concepts.tsv', {}, {}, config)
+
+
+
+
+
+
+```
+
+### File: step_02_triple_extraction.py
+**Type:** python
+**Size:** 3234 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+import json
+from langchain_core.prompts import ChatPromptTemplate
+from collections import Counter
+
+from tqdm import tqdm
+
+
+def step_02_triple_extraction(model: any,
+                              output_file: str,
+                              relation_def: dict[str, dict[str, str]],
+                              data: dict[str, dict[str, list[str]]],
+                              logging: any,
+                              config: dict[str, any]):
+    """
+    Step 1: Candidate Triple Extraction
+    Extracts candidate triples from the data and writes them to the output file.
+
+    :param model: the language model to use
+    :param output_file: the file to write the extracted triples to
+    :param relation_def: the relation definitions
+    :param data: the data to extract triples from
+    :param logging: the logger
+    :param config: the configuration can be provided with the following keys: prompt_tpextraction,
+    max_input_char
+
+    :return: None
+    """
+
+    if 'prompt_tpextraction' not in config:
+        config['prompt_tpextraction'] = "prompts/prompt_tpextraction.txt"
+        logging.info(f"No prompt template for triple extraction provided. "
+                     f"Using default prompt: {config['prompt_tpextraction']}")
+    if 'max_input_char' not in config:
+        config['max_input_char'] = 10000
+        logging.info(f"No max_input_char provided. Using default value: {config['max_input_char']}")
+
+
+    logging.info("Step 1: Starting candidate triple extraction.")
+    output_stream = open(output_file, 'w')
+
+    # initialize the prompt template
+    prompt_template_txt = open(config['prompt_tpextraction']).read()
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", "You are a knowledge graph builder."),
+        ("user", prompt_template_txt)
+    ])
+
+    # iterate over the data, extract triples and write them to the output stream
+    extracted_relations = []
+    for concept_id, (concept_name, concept_data) in tqdm(enumerate(data.items()), total=len(data)):
+        abstracts = ' '.join(data[concept_name]['abstracts'])
+
+        # instantiate the prompt template
+        prompt = prompt_template.invoke(
+            {"abstracts": abstracts[:config['max_input_char']],
+             "concepts": [concept_name],
+             "relation_definitions": '\n'.join(
+                 [f"{rel_type}: {rel_data['description']}" for rel_type, rel_data in
+                  relation_def.items()])})
+
+        # query the model
+        response = model.invoke(prompt)
+
+        if response != "None":
+            response_json = json.loads(response)
+            for triple in response_json:
+                if triple['p'] not in list(relation_def.keys()):
+                    continue
+                else:
+                    extracted_relations.append(triple['p'])
+
+                triple['id'] = concept_id
+                triple['concept'] = concept_name
+                output_stream.write(json.dumps(triple) + '\n')
+
+    output_stream.close()
+
+    logging.info("Step 1: Candidate Triple Extraction completed.")
+    logging.info(f"Num extracted candidate triples: {len(extracted_relations)}")
+    logging.debug(f"Extracted candidate triples by relaton type: {Counter(extracted_relations)}")
+
+```
+
+### File: step_03_fusion.py
+**Type:** python
+**Size:** 5446 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+import json
+import pandas as pd
+import random
+import os
+from langchain_core.prompts import ChatPromptTemplate
+from tqdm import tqdm
+
+from graphs import get_nx_graph, verbalize_neighbors_triples_from_triples, \
+    verbalize_neighbors_triples_from_graph
+
+
+def step_03_fusion(model: any,
+                   input_file: str,
+                   output_file: str,
+                   relation_def: dict[str, dict[str, str]],
+                   relation_2_id: dict[str, int],
+                   data: dict[str, dict[str, list[str]]],
+                   logging: any,
+                   config: dict[str, any]):
+    """
+    Step 2: Fusion
+    Refines the KG by fusing the candidate triples with the prerequisite-of graph or makes i
+    t more self-consistent.
+
+    :param model: the language model to use
+    :param input_file: the file with the candidate triples
+    :param output_file: the file to write the refined triples to
+    :param relation_def: the relation definitions
+    :param relation_2_id: the relation to id mapping
+    :param data: the abstracts per concept
+    :param logging: the logger
+    :param config: the configuration can be provided with the following keys: refined_concepts_file,
+    annotated_graph_file, prompt_fusion, max_input_char
+    :return: None
+    """
+
+    logging.info("Step 2: Starting global fusion to refine the KG.")
+
+    if 'refined_concepts_file' not in config:
+        config['refined_concepts_file'] = None
+        logging.info(f"No refined concepts file provided. Proceeding without it.")
+    if 'annotated_graph_file' not in config:
+        config['annotated_graph_file'] = ""
+        logging.info(f"No annotated graph file provided. Proceeding without it.")
+    if 'prompt_fusion' not in config:
+        config['prompt_fusion'] = "prompts/prompt_fusion.txt"
+        logging.info(f"No prompt template for fusion provided. Using default prompt: "
+                     f"{config['prompt_fusion']}")
+
+    candidate_triples = []
+    for line in open(input_file, 'r'):
+        t = json.loads(line)
+        candidate_triples.append((t['s'], t['p'], t['o']))
+
+    if config['refined_concepts_file'] is not None:
+        logging.info(
+            f"Refined concepts specified. Loading concepts from {config['refined_concepts_file']}.")
+        id_2_concept = {i: str(c['concept']) for i, c in
+                        pd.read_csv('data/nlp/refined_concepts.tsv', sep='|', header=None,
+                                    names=['id', 'concept'], index_col=0).iterrows()}
+        logging.info(
+            f"Loaded {len(id_2_concept)} refined concepts, e.g. {', '.join(list(id_2_concept.values())[:3])}")
+    else:
+        # randomly sample up to 100 concepts extracted in step 2
+        concepts = [c[0] for c in candidate_triples] + [c[2] for c in candidate_triples]
+        random.shuffle(concepts)
+        logging.info(
+            f'No refined concepts specified. Randomly selected concepts: {", ".join(concepts[:100])}')
+        id_2_concept = {i: c for i, c in enumerate(concepts)}
+
+    concept_2_id = {v: k for k, v in id_2_concept.items()}
+
+    # build the prerequisite-of graph
+    prerequisite_of_triples = []
+    if os.path.exists(config['annotated_graph_file']):
+        logging.info(f"Loading annotated graph from {config['annotated_graph_file']}.")
+        with open(config['annotated_graph_file'], 'r') as f:
+            for line in f:
+                s, p, o = line.strip().split('\t')
+                prerequisite_of_triples.append((str(s), str(p), str(o)))
+    else:
+        logging.info(
+            f"No annotated graph found at {config['annotated_graph_file']}. Proceeding without it.")
+
+    prerequisite_of_graph = get_nx_graph(prerequisite_of_triples, concept_2_id, relation_2_id)
+
+    # initialize the prompt template
+    prompt_template_txt = open(config['prompt_fusion']).read()
+
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", "You are a knowledge graph builder."),
+        ("user", prompt_template_txt)
+    ])
+
+    output_stream = open(output_file, 'w')
+    for id, candidate_concept in tqdm(id_2_concept.items(), total=len(id_2_concept)):
+        candidate_subgraph = verbalize_neighbors_triples_from_triples(candidate_triples,
+                                                                      candidate_concept)
+
+        prerequisite_of_graph_subgraph = verbalize_neighbors_triples_from_graph(
+            prerequisite_of_graph, candidate_concept, concept_2_id, id_2_concept, mode='outgoing')
+        abstracts = ' '.join(
+            data[candidate_concept]['abstracts']) if candidate_concept in data else ''
+
+        prompt = prompt_template.invoke(
+            {"concept": candidate_concept,
+             "graph1": candidate_subgraph,
+             "graph2": prerequisite_of_graph_subgraph,
+             "background": abstracts[:config['max_input_char']],
+             "relation_definitions": '\n'.join(
+                 [f"{rel_type}: {rel_data['description']}" for rel_type, rel_data in
+                  relation_def.items()])})
+
+        # query the model
+        response = model.invoke(prompt)
+
+        if response != "None":
+            response_json = json.loads(response)
+            for triple in response_json:
+                if triple['p'] not in list(relation_2_id.keys()):
+                    continue
+                output_stream.write(json.dumps(triple) + '\n')
+    output_stream.close()
+    logging.info("Step 2: Fusion completed.")
+
+```
+
+### File: __pycache__/graphs.cpython-311.pyc
+**Type:** pythonbytecode
+**Size:** 5018 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: __pycache__/models.cpython-311.pyc
+**Type:** pythonbytecode
+**Size:** 3320 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: __pycache__/step_01_concept_extraction.cpython-311.pyc
+**Type:** pythonbytecode
+**Size:** 11061 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: __pycache__/step_02_triple_extraction.cpython-311.pyc
+**Type:** pythonbytecode
+**Size:** 4543 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: __pycache__/step_03_fusion.cpython-311.pyc
+**Type:** pythonbytecode
+**Size:** 8665 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: data/test/gold_concepts.tsv
+**Type:** txt
+**Size:** 19121 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+1|textual adversarial attacks
+2|entity embeddings
+3|dialogue systems
+4|dialogue model
+5|multilingual masked language modeling
+6|shot text classification
+7|interactive semantic parsing
+8|machine reading comprehension
+9|discourse structure
+10|generate coherent informative comments
+11|natural language generation nlg
+12|conversational machine reading
+13|news representations
+14|coherent summaries
+15|task natural language generation
+16|contrastive visual semantic pretraining
+17|task oriented dialogue
+18|orthography morphological features
+19|improves adversarial
+20|outperform strong baselines dialogue
+21|cross lingual dependency parsing
+22|improve summarization systems
+23|language models trained
+24|nlp tasks especially
+25|dialog systems
+26|contextualized word embeddings
+27|lingual transfer
+28|sentiment classification
+29|chinese spelling correction
+30|task word segmentation
+31|language vision
+32|generative language models
+33|monolingual embeddings
+34|relation extraction
+35|embeddings domain specific embeddings
+36|stanford question answering
+37|domain question answering
+38|learning morphological
+39|generalization semantic parsing
+40|language models downstream
+41|sentiment classifier
+42|chinese named entity recognition
+43|word embeddings according
+44|grammatical error correction gec
+45|sentiment analysis absa
+46|neural topic modeling
+47|relation extraction methods
+48|task question answering
+49|deep learning based chinese
+50|neural word
+51|extractive qa
+52|natural language inference
+53|automatic argument
+54|explanations predictions
+55|detecting correcting
+56|summarization evaluation
+57|named entity recognition relation
+58|dataset biases
+59|syntactic parsing
+60|word embeddings trained
+61|dialogue learning
+62|fact-checking datasets
+63|knowledge graphs
+64|vision language navigation
+65|language models
+66|extractive summarization
+67|distributional semantics models
+68|satire detection
+69|trained language
+70|multilingual pre
+71|text generation text
+72|extractive summarization models
+73|treebank embeddings
+74|multilingual neural machine translation
+75|commonsense knowledge bases
+76|text generation
+77|adversarial attacks
+78|bias categories
+79|word embeddings represent words
+80|abstractive summarization
+81|topic aware
+82|neural semantic parser
+83|video question answering
+84|hate detection
+85|free text rationales
+86|entity recognition multiple
+87|sentence relation extraction
+88|speech translation models
+89|pretrained language
+90|adversarially trained
+91|factoid question answering
+92|named entity disambiguation
+93|topic distribution
+94|pretraining languages
+95|translation tasks
+96|pretrained multilingual models
+97|automatic fake news
+98|transfer learning
+99|aspect extraction
+100|generated text
+101|neural language models lms
+102|lingual embeddings
+103|multilingual neural machine
+104|dialogue summarization
+105|lexical sememe prediction
+106|cross lingual continual learning
+107|text generation tasks
+108|event commonsense evaluation
+109|task oriented dialogues
+110|spoken dialogue systems
+111|document modeling
+112|multi party dialogues
+113|domain sentiment
+114|oriented dialogue summarization
+115|recurrent neural
+116|bias text
+117|level language modeling
+118|multilingual representations
+119|textual adversarial
+120|text classification
+121|neural networks interpretability bayesian
+122|machine translation model
+123|end end relation extraction
+124|machine translation
+125|long short term memory
+126|entity recognition
+127|neural text classifiers
+128|aspect based sentiment
+129|coherent paragraph summaries
+130|cross domain sentiment
+131|identifiability attention
+132|dialogue models
+133|language models plms
+134|embedding models
+135|language understanding
+136|paraphrase generation
+137|unsupervised bilingual word
+138|bias nlp
+139|orthography morphological features lexicalized
+140|classification tasks
+141|multilingual models
+142|generation semantic parsing
+143|lingual openqa
+144|chinese word segmentation cws
+145|unsupervised parsing
+146|linguistic representation
+147|argument extraction eae
+148|neural networks rnns
+149|vision language models
+150|seq2seq text generation
+151|language technologies
+152|image text
+153|multi modal datasets
+154|topic discovery
+155|neural models
+156|deep syntactic
+157|sentiment analysis
+158|word embeddings represent
+159|aspects implicit opinions
+160|dialogue pre training
+161|nlp tasks especially low
+162|language models like bert
+163|automatic fake news detection
+164|named entity recognition ner
+165|parsing idea treebank embedding
+166|fact checking models
+167|summarization model
+168|generating summaries
+169|unsupervised semantic parsing
+170|trained language models plms
+171|interpretable descriptions
+172|current state nlp
+173|nested named entity recognition
+174|grained sentiment
+175|neural text
+176|entity recognition ner
+177|perplexity language models
+178|link prediction
+179|bias multilingual representations
+180|model generated summaries
+181|opinion entity extraction
+182|natural language text
+183|compositional distributional semantics
+184|dependency parsing performance
+185|modeling morphological
+186|embeddings pre
+187|multilingual machine translation
+188|discourse segmenters
+189|unsupervised morphological
+190|topic model
+191|neural word segmentation
+192|output attention weights
+193|language models like
+194|textual features
+195|compositional generalization semantic parsing
+196|explainable nlp
+197|speech text translation st
+198|multimodal embeddings
+199|summarization largely
+200|bias mitigation
+201|language target languages
+202|dependency parsing
+203|natural questions dataset
+204|transcribed speech
+205|reading comprehension datasets
+206|machine translation using
+207|dialogue modeling
+208|cross lingual cross modal
+209|neural topic model
+210|word vectors
+211|language model
+212|information retrieval tasks
+213|advances neural text
+214|language model fine tuning
+215|semantic retrieval
+216|unsupervised syntactic parsing
+217|short term memory
+218|neural topic
+219|speech speech translation s2st
+220|word representations
+221|abstractive summarization models
+222|semantic decoding
+223|entity representations
+224|question answering models
+225|annotated data
+226|fake news detection
+227|event mentions
+228|document level relation extraction
+229|cross lingual summarization
+230|sentence embeddings
+231|shot semantic parsing
+232|multi hop reading comprehension
+233|human annotated explanation
+234|event argument extraction
+235|phonological representations
+236|event language models
+237|answering systems
+238|bilingual word embeddings
+239|domain adaptation
+240|event extraction
+241|entity detection
+242|rumor detection
+243|language generation nlg
+244|natural language understanding
+245|lingual semantic parsing
+246|aspect sentiment classification
+247|machine translation systems
+248|hierarchical attention network
+249|spelling errors
+250|adversarial examples
+251|attention based explanations
+252|morphological analysis
+253|morphological paradigm
+254|attention based
+255|sentence compression models
+256|pretrained language models
+257|named entity
+258|shot continual relation extraction
+259|sentiment knowledge
+260|extractive summaries
+261|topic aware news representations
+262|approach topic aware
+263|entity extraction
+264|transformer language models
+265|error correction
+266|sentiment analysis absa aims
+267|sentiment polarity
+268|structured sentiment
+269|machine reading comprehension mrc
+270|rnn cnn models
+271|multi modal dialogue
+272|advances neural text generation
+273|fact checking
+274|represent max likelihood parse
+275|lingual continual learning
+276|visual question answering vqa
+277|question answer
+278|contextualized representations
+279|morphological tasks
+280|neural machine translation models
+281|inter sentence relation extraction
+282|languages unseen pretraining
+283|visual question answering
+284|chinese relation extraction
+285|language technology
+286|domain sentiment classification
+287|pointer networks
+288|visual semantic
+289|speech translation
+290|performance neural machine translation
+291|attention weights
+292|learning word embedding
+293|oriented visual dialogue
+294|language processing
+295|parsing model
+296|form question answering
+297|controllable summarization
+298|information retrieval
+299|goal oriented visual dialogue
+300|category opinion sentiment quadruples
+301|offensive language classifiers
+302|computational psycholinguistics
+303|word segmentation
+304|morphological typology
+305|morphologically rich
+306|specializing word embeddings according
+307|word embedding models
+308|contextual entities
+309|knowledge graph completion
+310|grammatical error correction
+311|knowledge graph embedding
+312|vision language pre
+313|explanations attention
+314|large language models llms
+315|constituency parsing
+316|event causality identification
+317|knowledge graph
+318|recurrent neural networks
+319|morphological compositionality
+320|embeddings semantic
+321|annotated semantic relatedness
+322|prototype mention embeddings
+323|neural dialogue
+324|visual language
+325|lingual cross modal
+326|semantic parser
+327|structured topic model
+328|character level language modeling
+329|multilingual pre training
+330|monolingual word embeddings
+331|neural abstractive summarization
+332|gender bias
+333|social biases
+334|sentence representations
+335|unsupervised semantic
+336|recurrent neural networks rnns
+337|topic aware news
+338|entity mentions relations
+339|cross lingual embeddings
+340|dependency parser
+341|graph neural
+342|named entities
+343|evaluation benchmark korean
+344|generate sentences
+345|better language
+346|sentiment elements
+347|cross lingual word embeddings
+348|semantic parsing datasets
+349|pre trained language models
+350|political debates
+351|diverse conversational corpora
+352|reasoning datasets
+353|event knowledge
+354|word embeddings
+355|statistical machine translation
+356|task oriented dialogue systems
+357|natural language generation tasks
+358|various information retrieval
+359|large language models
+360|sentiment classifiers
+361|bilingual lexicon induction
+362|relations learning
+363|relation extraction task
+364|bias pretrained language models
+365|summarization models
+366|nlp community
+367|retrieval models
+368|political bias factuality reporting
+369|multimodal dialogue
+370|factuality prediction
+371|document ranking
+372|knowledge graph kg
+373|recurrent neural network
+374|human translators
+375|based parsers
+376|argument mining
+377|nlg models
+378|task learning
+379|natural language questions
+380|conversation model
+381|nlu tasks
+382|latent relations learning
+383|neural ranking
+384|machine translation models
+385|machine translation nmt
+386|modal datasets
+387|summarization datasets
+388|language understanding tasks
+389|fact checks
+390|networks rntn
+391|context word vectors
+392|word embeddings different languages
+393|dialog generation
+394|conditional text generation
+395|unsupervised cross lingual
+396|race nlp
+397|adversarial training
+398|zero shot text classification
+399|multimodal language
+400|morphological analyzer
+401|long form question answering
+402|sentence generation
+403|dialogue generation model
+404|discourse coherence
+405|underrepresented languages
+406|neural retrieval model
+407|recognition relation extraction
+408|complex named entities
+409|reading comprehension rc
+410|reading comprehension mrc models
+411|multilingual translation
+412|bias pretrained language
+413|neural summarization model
+414|unsupervised bilingual lexicon induction
+415|cross lingual semantic parsing
+416|semantic parsers
+417|shot cross lingual transfer
+418|multimodal machine translation
+419|summarization dataset
+420|dependency parse
+421|image text retrieval
+422|modified natural questions dataset
+423|political debates 50
+424|prompt based models
+425|sentence representation learning
+426|shot relation extraction
+427|named entities relations
+428|sentence image
+429|event ontology
+430|chinese named entity
+431|discourse modes
+432|social bias
+433|faceted summarization
+434|automatic dialogue
+435|topic models
+436|distributed word representations
+437|domain aspect based sentiment
+438|challenges semantic parsing
+439|representation learning
+440|annotated training
+441|recurrent neural tensor
+442|unsupervised bilingual word embeddings
+443|natural language explanations nles
+444|neural summarization
+445|dense retrieval
+446|compositional distributional semantics models
+447|based sentiment
+448|existing word embedding
+449|sarcasm detection
+450|deep learning models nlp
+451|specializing word embeddings
+452|generated explanations
+453|ground truth parse trees
+454|linguistic knowledge identification
+455|commonsense question answering
+456|controlled text generation
+457|tuning pre trained language
+458|phonological features
+459|neural machine translation nmt
+460|code generation semantic parsing
+461|multilingual neural
+462|interpretability methods
+463|visual dialogue
+464|commonsense evaluation
+465|penn treebank
+466|sequence labeling models
+467|argument invention
+468|language explanations predictions
+469|learn event
+470|semantic representations
+471|relation classification
+472|neural parsers
+473|structured knowledge
+474|generative retrieval
+475|semantic role labeling
+476|argument extraction
+477|transition based parsers
+478|identifiability attention weights
+479|syntactic generalization performance
+480|discourse treebank
+481|level distant relation extraction
+482|single document summarization
+483|chinese nlp
+484|neural language
+485|entity linkage
+486|language modeling
+487|knowledge graph completion kgc
+488|fine grained entity typing
+489|semantic parsing
+490|multilingual pre trained
+491|stanford question answering dataset
+492|named entity recognition multiple
+493|reasoning abilities
+494|approach topic aware news
+495|reading comprehension task
+496|aspect category opinion sentiment
+497|summarization tasks
+498|machine translation mt
+499|dialogue state tracking dst
+500|cognates detection
+501|generated sentence
+502|visual semantic pretraining
+503|contextual subword embeddings
+504|lexical expectations
+505|morphological family
+506|vision language pre training
+507|sparse retrieval
+508|oriented dialogue systems
+509|neural semantic parsers
+510|fact checking articles
+511|dialogue evaluation
+512|data text generation
+513|hate speech detection
+514|clinical event extraction
+515|entity recognition ner aims
+516|speech text translation
+517|pre trained models
+518|context sensitive embeddings
+519|nli models
+520|improves adversarial robustness
+521|domain learning
+522|nested named entity
+523|approaches visual question answering
+524|automatic argument generation
+525|neural machine translation model
+526|speech translation e2e
+527|unsupervised constituency parsing
+528|shot learning
+529|category opinion sentiment
+530|lingual word embeddings
+531|free text relations
+532|textual similarity sts tasks
+533|speech translation s2st
+534|semantic role labeling srl
+535|chain thought prompting
+536|question answering
+537|word embeddings build
+538|speech translation e2e st
+539|aspect sentiment
+540|dialogue data
+541|learns event
+542|semantic dependency parsing
+543|discourse relation
+544|knowledge inference
+545|data text generation model
+546|percentage points ibm debater
+547|morphological paradigms
+548|dialogue state tracking
+549|event relations
+550|non contextual subword embeddings
+551|level sentiment classification
+552|natural language generation
+553|language models downstream tasks
+554|neural machine translation
+555|distributional semantics
+556|neural text generation
+557|human attention keyphrase extraction
+558|cross lingual transfer
+559|recurrent neural tensor networks
+560|embeddings represent words
+561|question answering model
+562|pretrained multilingual
+563|translation quality
+564|relation prediction
+565|event argument extraction eae
+566|reasoning tasks
+567|natural language explanations
+568|discourse relations
+569|machine translation paper
+570|aware news representations
+571|crossmodal attention
+572|contrastive visual semantic
+573|text classification tasks
+574|neural language models
+575|biomedical entity linking
+576|document level event extraction
+577|sentiment classification asc
+578|latent topics
+579|binomial neural topic model
+580|trained language models
+581|response generation
+582|text generation model
+583|summary generation
+584|text generation text style
+585|entity recognition relation extraction
+586|dialog datasets
+587|visually grounded language
+588|unintended biases text
+589|continual relation extraction
+590|neural semantic
+591|generated summaries
+5
+... [Content Truncated] ...
+```
+
+### File: data/test/prerequisite-of_graph.tsv
+**Type:** txt
+**Size:** 29101 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+syntax	Is-a-Prerequisite-of	cky parsing
+syntax	Is-a-Prerequisite-of	syntaxnet
+syntax	Is-a-Prerequisite-of	syntax based machine translation
+syntax	Is-a-Prerequisite-of	dependency syntax
+sentiment analysis	Is-a-Prerequisite-of	social media analysis
+planning	Is-a-Prerequisite-of	robotics
+planning	Is-a-Prerequisite-of	logic and logical agents
+planning	Is-a-Prerequisite-of	problem solving and search
+planning	Is-a-Prerequisite-of	adversarial search
+calculus	Is-a-Prerequisite-of	spectral methods
+calculus	Is-a-Prerequisite-of	harmonic functions
+calculus	Is-a-Prerequisite-of	mathematical models
+calculus	Is-a-Prerequisite-of	structured sparsity
+calculus	Is-a-Prerequisite-of	recursive neural network
+calculus	Is-a-Prerequisite-of	newton method
+calculus	Is-a-Prerequisite-of	machine learning resources
+calculus	Is-a-Prerequisite-of	latent variable models
+calculus	Is-a-Prerequisite-of	State Space Models
+calculus	Is-a-Prerequisite-of	Meta-Learning
+calculus	Is-a-Prerequisite-of	Mixture Models
+calculus	Is-a-Prerequisite-of	Manifold Learning
+shallow parsing	Is-a-Prerequisite-of	cky parsing
+matrix multiplication	Is-a-Prerequisite-of	Message Passing
+graph theory	Is-a-Prerequisite-of	Message Passing
+structured learning	Is-a-Prerequisite-of	word distributions
+structured learning	Is-a-Prerequisite-of	sentence representations
+structured learning	Is-a-Prerequisite-of	vector semantics
+structured learning	Is-a-Prerequisite-of	vector representations
+structured learning	Is-a-Prerequisite-of	semantic similarity
+lexical semantics	Is-a-Prerequisite-of	thesaurus-based similarity
+evaluation of language modeling	Is-a-Prerequisite-of	neural language modeling
+generative adversarial networks	Is-a-Prerequisite-of	Variations of GANs
+convolutional neural network	Is-a-Prerequisite-of	neural question answering
+convolutional neural network	Is-a-Prerequisite-of	ResNet
+question answering	Is-a-Prerequisite-of	neural question answering
+question answering	Is-a-Prerequisite-of	evaluation of question answering
+question answering	Is-a-Prerequisite-of	Visual QA
+speech processing	Is-a-Prerequisite-of	text to speech generation
+discourse analysis	Is-a-Prerequisite-of	discourse parsing
+dependency parsing	Is-a-Prerequisite-of	transition based dependency parsing
+dependency parsing	Is-a-Prerequisite-of	evaluation of dependency parsing
+programming languages	Is-a-Prerequisite-of	tools for dl
+search	Is-a-Prerequisite-of	uncertainty
+search	Is-a-Prerequisite-of	logic and logical agents
+search	Is-a-Prerequisite-of	informed search
+search	Is-a-Prerequisite-of	problem solving and search
+search	Is-a-Prerequisite-of	heuristic search
+search	Is-a-Prerequisite-of	adversarial search
+uncertainty	Is-a-Prerequisite-of	robotics
+long short term memory networks	Is-a-Prerequisite-of	memory networks
+long short term memory networks	Is-a-Prerequisite-of	neural question answering
+reinforcement learning	Is-a-Prerequisite-of	robotics
+reinforcement learning	Is-a-Prerequisite-of	agent-based view of ai
+probabilities	Is-a-Prerequisite-of	cky parsing
+probabilities	Is-a-Prerequisite-of	structured learning
+probabilities	Is-a-Prerequisite-of	mathematical models
+probabilities	Is-a-Prerequisite-of	speech processing
+probabilities	Is-a-Prerequisite-of	question answering
+probabilities	Is-a-Prerequisite-of	structured sparsity
+probabilities	Is-a-Prerequisite-of	social network extraction
+probabilities	Is-a-Prerequisite-of	variational bayes models
+probabilities	Is-a-Prerequisite-of	monte carlo tree search
+probabilities	Is-a-Prerequisite-of	recursive neural network
+probabilities	Is-a-Prerequisite-of	bayesian network
+probabilities	Is-a-Prerequisite-of	problem solving and search
+probabilities	Is-a-Prerequisite-of	hidden markov models
+probabilities	Is-a-Prerequisite-of	word distributions
+probabilities	Is-a-Prerequisite-of	classification
+probabilities	Is-a-Prerequisite-of	bayes theorem
+probabilities	Is-a-Prerequisite-of	statistical parsing
+probabilities	Is-a-Prerequisite-of	monte carlo methods
+probabilities	Is-a-Prerequisite-of	latent variable models
+probabilities	Is-a-Prerequisite-of	course introduction
+probabilities	Is-a-Prerequisite-of	Dirichlet Processes
+probabilities	Is-a-Prerequisite-of	Meta-Learning
+probabilities	Is-a-Prerequisite-of	Mixture Models
+probabilities	Is-a-Prerequisite-of	Manifold Learning
+probabilities	Is-a-Prerequisite-of	Naive Bayes
+monte carlo tree search	Is-a-Prerequisite-of	AlphaGo
+logic and logical agents	Is-a-Prerequisite-of	agent-based view of ai
+seq2seq	Is-a-Prerequisite-of	neural summarization
+linguistics basics	Is-a-Prerequisite-of	cky parsing
+linguistics basics	Is-a-Prerequisite-of	computational phonology
+linguistics basics	Is-a-Prerequisite-of	speech processing
+linguistics basics	Is-a-Prerequisite-of	discourse analysis
+linguistics basics	Is-a-Prerequisite-of	morphology and lexicon
+linguistics basics	Is-a-Prerequisite-of	course introduction
+linguistics basics	Is-a-Prerequisite-of	nlp and vision
+linguistics basics	Is-a-Prerequisite-of	semantic similarity
+linguistics basics	Is-a-Prerequisite-of	text to speech generation
+linguistics basics	Is-a-Prerequisite-of	nlp for the humanities
+feature learning	Is-a-Prerequisite-of	Manifold Learning
+bayesian network	Is-a-Prerequisite-of	hidden markov models
+hidden markov models	Is-a-Prerequisite-of	course introduction
+optimization	Is-a-Prerequisite-of	memory networks
+optimization	Is-a-Prerequisite-of	dual decomposition
+optimization	Is-a-Prerequisite-of	newton method
+optimization	Is-a-Prerequisite-of	machine learning resources
+optimization	Is-a-Prerequisite-of	KKT conditions
+optimization	Is-a-Prerequisite-of	Lagrange duality
+optimization	Is-a-Prerequisite-of	Meta-Learning
+generative and discriminative models	Is-a-Prerequisite-of	Variations of GANs
+word distributions	Is-a-Prerequisite-of	vector representations
+maximum likelihood estimation	Is-a-Prerequisite-of	Autoencoders
+wordnet	Is-a-Prerequisite-of	thesaurus-based similarity
+wordnet	Is-a-Prerequisite-of	lexical semantics
+beam search	Is-a-Prerequisite-of	neural summarization
+tree adjoining grammar	Is-a-Prerequisite-of	context sensitive grammar
+computer vision	Is-a-Prerequisite-of	nlp and vision
+context free grammar	Is-a-Prerequisite-of	cky parsing
+context free grammar	Is-a-Prerequisite-of	context sensitive grammar
+random walks	Is-a-Prerequisite-of	harmonic functions
+recurrent neural networks	Is-a-Prerequisite-of	neural question answering
+text summarization	Is-a-Prerequisite-of	neural summarization
+text summarization	Is-a-Prerequisite-of	summarization evaluation
+bayes theorem	Is-a-Prerequisite-of	question answering
+bayes theorem	Is-a-Prerequisite-of	bayesian network
+backpropagation	Is-a-Prerequisite-of	Variations of GANs
+backpropagation	Is-a-Prerequisite-of	Autoencoders
+logic and reasoning	Is-a-Prerequisite-of	predicate logic
+part of speech tagging	Is-a-Prerequisite-of	syntaxnet
+part of speech tagging	Is-a-Prerequisite-of	course introduction
+part of speech tagging	Is-a-Prerequisite-of	statistical part of speech tagging
+n-gram models	Is-a-Prerequisite-of	word distributions
+vector semantics	Is-a-Prerequisite-of	semantic similarity
+machine translation	Is-a-Prerequisite-of	morphology and semantics in machine translation
+machine translation	Is-a-Prerequisite-of	machine translation techniques
+machine translation	Is-a-Prerequisite-of	syntax based machine translation
+word embedding	Is-a-Prerequisite-of	syntaxnet
+word embedding	Is-a-Prerequisite-of	word embedding variations
+python	Is-a-Prerequisite-of	tools for dl
+kernel function	Is-a-Prerequisite-of	Mixture Models
+semi supervised learning	Is-a-Prerequisite-of	first-order logic
+parsing	Is-a-Prerequisite-of	syntaxnet
+parsing	Is-a-Prerequisite-of	statistical parsing
+parsing	Is-a-Prerequisite-of	semi supervised learning
+parsing	Is-a-Prerequisite-of	lexicalized parsing
+parsing	Is-a-Prerequisite-of	neural parsing
+parsing	Is-a-Prerequisite-of	parsing evaluation
+machine learning resources	Is-a-Prerequisite-of	semi-supervised learning
+machine learning resources	Is-a-Prerequisite-of	random walks and harmonic functions
+machine learning resources	Is-a-Prerequisite-of	Unsupervised learning
+machine learning resources	Is-a-Prerequisite-of	Meta-Learning
+information retrieval	Is-a-Prerequisite-of	toolkits for information retrieval
+information retrieval	Is-a-Prerequisite-of	document ranking
+information retrieval	Is-a-Prerequisite-of	search engines
+penn treebank	Is-a-Prerequisite-of	syntaxnet
+penn treebank	Is-a-Prerequisite-of	first-order logic
+bio text mining	Is-a-Prerequisite-of	nlp for biology
+neural networks	Is-a-Prerequisite-of	memory networks
+neural networks	Is-a-Prerequisite-of	neural question answering
+neural networks	Is-a-Prerequisite-of	neural language modeling
+neural networks	Is-a-Prerequisite-of	syntaxnet
+neural networks	Is-a-Prerequisite-of	convolutional neural networks
+neural networks	Is-a-Prerequisite-of	neural parsing
+neural networks	Is-a-Prerequisite-of	training neural networks
+neural networks	Is-a-Prerequisite-of	Autoencoders
+dimensionality reduction	Is-a-Prerequisite-of	Manifold Learning
+dimensionality reduction	Is-a-Prerequisite-of	Principal Component Analysis
+clustering	Is-a-Prerequisite-of	Mixture Models
+relation extraction	Is-a-Prerequisite-of	social media analysis
+vector representations	Is-a-Prerequisite-of	structured learning
+vector representations	Is-a-Prerequisite-of	evaluation of text classification
+first order logic	Is-a-Prerequisite-of	predicate logic
+language modeling	Is-a-Prerequisite-of	evaluation of language modeling
+language modeling	Is-a-Prerequisite-of	neural language modeling
+graphical models	Is-a-Prerequisite-of	Markov Random Fields
+graphical models	Is-a-Prerequisite-of	Mean Field Approximation
+semantic similarity	Is-a-Prerequisite-of	thesaurus-based similarity
+dynamic programming	Is-a-Prerequisite-of	cky parsing
+dynamic programming	Is-a-Prerequisite-of	course introduction
+statistical part of speech tagging	Is-a-Prerequisite-of	course introduction
+linear algebra	Is-a-Prerequisite-of	spectral methods
+linear algebra	Is-a-Prerequisite-of	structured learning
+linear algebra	Is-a-Prerequisite-of	mathematical models
+linear algebra	Is-a-Prerequisite-of	structured sparsity
+linear algebra	Is-a-Prerequisite-of	machine learning resources
+linear algebra	Is-a-Prerequisite-of	latent variable models
+linear algebra	Is-a-Prerequisite-of	dimensionality reduction
+linear algebra	Is-a-Prerequisite-of	Message Passing
+linear algebra	Is-a-Prerequisite-of	State Space Models
+linear algebra	Is-a-Prerequisite-of	Variations of GANs
+linear algebra	Is-a-Prerequisite-of	Mixture Models
+linear algebra	Is-a-Prerequisite-of	Manifold Learning
+linear algebra	Is-a-Prerequisite-of	Principal Component Analysis
+random walks and harmonic functions	Is-a-Prerequisite-of	semi-supervised learning
+random walks and harmonic functions	Is-a-Prerequisite-of	Unsupervised learning
+finite state machines	Is-a-Prerequisite-of	finite state transducers
+chomsky hierarchy	Is-a-Prerequisite-of	context sensitive grammar
+chomsky hierarchy	Is-a-Prerequisite-of	probabilistic grammars
+chomsky hierarchy	Is-a-Prerequisite-of	computation theory
+speech signal analysis	Is-a-Prerequisite-of	speech processing
+information extraction	Is-a-Prerequisite-of	social network extraction
+information extraction	Is-a-Prerequisite-of	social media analysis
+natural language processing intro	Is-a-Prerequisite-of	cky parsing
+natural language processing intro	Is-a-Prerequisite-of	chinese nlp
+natural language processing intro	Is-a-Prerequisite-of	speech processing
+natural language processing intro	Is-a-Prerequisite-of	discourse analysis
+natural language processing intro	Is-a-Prerequisite-of	machine translation
+natural language processing intro	Is-a-Prerequisite-of	parsing
+natural language processing intro	Is-a-Prerequisite-of	morphology and lexicon
+natural language processing intro	Is-a-Prerequisite-of	graph-based nlp
+natural language processing intro	Is-a-Prerequisite-of	course introduction
+natural language processing intro	Is-a-Prerequisite-of	vector representations
+natural language processing intro	Is-a-Prerequisite-of	nlp and vision
+natural language processing intro	Is-a-Prerequisite-of	semantic similarity
+natural language processing intro	Is-a-Prerequisite-of	text to speech generation
+natural language processing intro	Is-a-Prerequisite-of	nlp for the humanities
+loss function	Is-a-Prerequisite-of	speech processing
+loss function	Is-a-Prerequisite-of	classification
+loss function	Is-a-Prerequisite-of	machine learning resources
+loss function	Is-a-Prerequisite-of	latent variable models
+loss function	Is-a-Prerequisite-of	Variations of GANs
+loss function	Is-a-Prerequisite-of	Meta-Learning
+loss function	Is-a-Prerequisite-of	Autoencoders
+shift-reduce parsing	Is-a-Prerequisite-of	transition based dependency parsing
+knowledge representation	Is-a-Prerequisite-of	predicate logic
+singular value decomposition	Is-a-Prerequisite-of	Principal Component Analysis
+Gaussian graphical models	Is-a-Prerequisite-of	Mixture Models
+Principal Component Analysis	Is-a-Prerequisite-of	Manifold Learning
+Sampling	Is-a-Prerequisite-of	gibbs sampling
+syntax	Is-a-Prerequisite-of	penn treebank
+syntax	Is-a-Prerequisite-of	shift-reduce parsing
+planning	Is-a-Prerequisite-of	game playing in ai
+semi-supervised learning	Is-a-Prerequisite-of	graph convolutional networks
+semi-supervised learning	Is-a-Prerequisite-of	neural networks
+parts of speech	Is-a-Prerequisite-of	penn treebank
+structured learning	Is-a-Prerequisite-of	automated essay scoring
+structured learning	Is-a-Prerequisite-of	word embedding
+structured learning	Is-a-Prerequisite-of	document representation
+structured learning	Is-a-Prerequisite-of	bio text mining
+structured learning	Is-a-Prerequisite-of	recommendation system
+structured learning	Is-a-Prerequisite-of	context free grammars
+structured learning	Is-a-Prerequisite-of	tsne
+structured learning	Is-a-Prerequisite-of	text mining
+structured learning	Is-a-Prerequisite-of	linear discriminant analysis
+structured learning	Is-a-Prerequisite-of	kernels
+lexical semantics	Is-a-Prerequisite-of	event detection
+evaluation of language modeling	Is-a-Prerequisite-of	character level language models
+evaluation of language modeling	Is-a-Prerequisite-of	text generation
+toolkits for information retrieval	Is-a-Prerequisite-of	text mining
+toolkits for information retrieval	Is-a-Prerequisite-of	query expansion
+toolkits for information retrieval	Is-a-Prerequisite-of	information extraction
+classic parsing methods	Is-a-Prerequisite-of	semantic parsing
+classic parsing methods	Is-a-Prerequisite-of	shift-reduce parsing
+chinese nlp	Is-a-Prerequisite-of	spelling correction
+chinese nlp	Is-a-Prerequisite-of	automated essay scoring
+chinese nlp	Is-a-Prerequisite-of	grammar checker
+speech processing	Is-a-Prerequisite-of	speech synthesis
+programming languages	Is-a-Prerequisite-of	preprocessing
+evaluation of information retrieval	Is-a-Prerequisite-of	query expansion
+nlp for biology	Is-a-Prerequisite-of	bio text mining
+search	Is-a-Prerequisite-of	a* search
+search	Is-a-Prerequisite-of	game playing in ai
+neural summarization	Is-a-Prerequisite-of	scientific article summarization
+summarization evaluation	Is-a-Prerequisite-of	scientific article summarization
+robotics	Is-a-Prerequisite-of	robotic locomotion
+social network extraction	Is-a-Prerequisite-of	citation networks
+logic and logical agents	Is-a-Prerequisite-of	expert systems
+logic and logical agents	Is-a-Prerequisite-of	propositional logic
+linguistics basics	Is-a-Prerequisite-of	spelling correction
+linguistics basics	Is-a-Prerequisite-of	shallow parsing
+linguistics basics	Is-a-Prerequisite-of	language identification
+linguistics basics	Is-a-Prerequisite-of	dialog systems
+linguistics basics	Is-a-Prerequisite-of	event detection
+linguistics basics	Is-a-Prerequisite-of	automated essay scoring
+linguistics basics	Is-a-Prerequisite-of	semantic parsing
+linguistics basics	Is-a-Prerequisite-of	prosody
+linguistics basics	Is-a-Prerequisite-of	sentence simplification
+linguistics basics	Is-a-Prerequisite-of	word embedding
+linguistics basics	Is-a-Prerequisite-of	sentence boundary recognition
+linguistics basics	Is-a-Prerequisite-of	document representation
+linguistics basics	Is-a-Prerequisite-of	penn treebank
+linguistics basics	Is-a-Prerequisite-of	lexicography
+linguistics basics	Is-a-Prerequisite-of	text generation
+linguistics basics	Is-a-Prerequisite-of	bio text mining
+linguistics basics	Is-a-Prerequisite-of	recommendation sys
+... [Content Truncated] ...
+```
+
+### File: data/test/refined_concepts.tsv
+**Type:** txt
+**Size:** 7600 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+1|spelling correction
+2|structured prediction
+3|pointer networks
+4|spectral methods
+5|graph convolutional networks
+6|syntax
+7|markov decision processes
+8|sentiment analysis
+9|planning
+10|calculus
+11|shallow parsing
+12|harmonic functions
+13|language identification
+14|semi-supervised learning
+15|dialog systems
+16|event detection
+17|cky parsing
+18|a* search
+19|automated essay scoring
+20|matrix multiplication
+21|phrase based machine translation
+22|neural turing machine
+23|graph theory
+24|semantic parsing
+25|thesaurus-based similarity
+26|statistical machine translation
+27|greedy algorithms
+28|parts of speech
+29|context sensitive grammar
+30|memory networks
+31|genetic algorithms
+32|transfer learning
+33|structured learning
+34|named entity recognition
+35|lexical semantics
+36|collaborative filtering
+37|evaluation of language modeling
+38|bias-variance
+39|mathematical models
+40|generative adversarial networks
+41|bag of words model
+42|gradient descent
+43|convolutional neural network
+44|morphological disambiguation
+45|entropy
+46|question answering
+47|class logistics
+48|toolkits for information retrieval
+49|computational phonology
+50|classic parsing methods
+51|deep learning tools
+52|chinese nlp
+53|speech processing
+54|discourse analysis
+55|q learning
+56|dependency parsing
+57|prosody
+58|bagging
+59|domain adaptation
+60|transliteration
+61|document ranking
+62|question answering
+63|programming languages
+64|facial recognition systems
+65|neural question answering
+66|particle filter
+67|combinatory categorial grammar
+68|nn sequence parsing
+69|evaluation of information retrieval
+70|nlp for biology
+71|structured sparsity
+72|multilingual word embedding
+73|one-shot learning
+74|others
+75|theory of computation
+76|paraphrasing
+77|search
+78|multi-modal learning
+79|uncertainty
+80|neural summarization
+81|chat bots
+82|information theory
+83|multi-task learning
+84|transition based dependency parsing
+85|summarization evaluation
+86|inference
+87|long short term memory networks
+88|robotics
+89|reinforcement learning
+90|social network extraction
+91|learning
+92|social media analysis
+93|perceptron
+94|discourse model
+95|sentence simplification
+96|recursive neural networks
+97|probabilities
+98|variational bayes models
+99|monte carlo tree search
+100|recursive neural network
+101|logic and logical agents
+102|data structures
+103|informed search
+104|seq2seq
+105|linguistics basics
+106|feature learning
+107|conditional probability
+108|bayesian network
+109|decision trees
+110|problem solving and search
+111|hidden markov models
+112|optimization
+113|tokenization
+114|generative and discriminative models
+115|crawling the web
+116|speech recognition
+117|neural language modeling
+118|word distributions
+119|predicate logic
+120|object detection
+121|gibbs sampling
+122|maximum likelihood estimation
+123|random forest
+124|wordnet
+125|beam search
+126|regularization
+127|bidirectional recurrent neural networks
+128|tree adjoining grammar
+129|robotic locomotion
+130|classification
+131|supertagging
+132|finite state transducers
+133|computer vision
+134|stemming
+135|context free grammar
+136|radial basis function network
+137|probabilistic grammars
+138|attention models
+139|random walks
+140|dual decomposition
+141|constraint satisfaction
+142|syntaxnet
+143|k-nn
+144|variational autoencoders
+145|discourse parsing
+146|knowledge graph
+147|evaluation of question answering
+148|normalization
+149|recurrent neural networks
+150|text summarization
+151|bootstrapping
+152|bayes theorem
+153|capsule networks
+154|text similarity
+155|backpropagation
+156|imagenet
+157|logic and reasoning
+158|search engine indexing
+159|part of speech tagging
+160|n-gram models
+161|search engines
+162|statistical parsing
+163|sentence representations
+164|vector semantics
+165|activation functions
+166|machine translation
+167|context-sensitive grammars
+168|heuristic search
+169|caption generation
+170|highway networks
+171|earley parsing
+172|deep Q-network
+173|newton method
+174|reading comprehension
+175|ensemble learning
+176|word embedding
+177|latent dirichlet allocation
+178|python
+179|kernel function
+180|log-linear models
+181|semi supervised learning
+182|parsing
+183|convolutional neural networks
+184|spectral clustering
+185|morphology and semantics in machine translation
+186|regular expressions
+187|deep learning introduction
+188|scientific article summarization
+189|sequence classification and conditional random fields
+190|logistic regression
+191|data structures and algorithms
+192|unlexicalized parsing
+193|machine learning resources
+194|expert systems
+195|linear programming
+196|weakly-supervised learning
+197|information retrieval
+198|monte carlo methods
+199|topic modeling
+200|sentence boundary recognition
+201|machine translation techniques
+202|neural machine translation
+203|k means
+204|document representation
+205|penn treebank
+206|citation networks
+207|lexicography
+208|latent variable models
+209|character level language models
+210|text generation
+211|computation theory
+212|bio text mining
+213|recommendation system
+214|dual problems
+215|morphology and lexicon
+216|edit distance
+217|preprocessing
+218|context free grammars
+219|probabilistic context free grammars
+220|neural networks
+221|game playing in ai
+222|lexicalized parsing
+223|graph-based nlp
+224|handwriting recognition
+225|gated recurrent units
+226|dimensionality reduction
+227|clustering
+228|speech synthesis
+229|relation extraction
+230|markov chain monte carlo
+231|syntax based machine translation
+232|course introduction
+233|phonetics
+234|stack lstm
+235|vector representations
+236|first order logic
+237|matrix factorization
+238|feature selection
+239|nlp and vision
+240|tsne
+241|language modeling
+242|text mining
+243|graphical models
+244|semantic similarity
+245|noisy channel model
+246|pagerank
+247|query expansion
+248|word segmentation
+249|text to speech generation
+250|dynamic programming
+251|the ibm models
+252|statistical part of speech tagging
+253|linear algebra
+254|neural parsing
+255|autonomous cars
+256|nlp for databases
+257|word sense disambiguation
+258|evaluation of text classification
+259|semantic role labeling
+260|random walks and harmonic functions
+261|cross entropy
+262|finite state machines
+263|chomsky hierarchy
+264|named entity recognition
+265|dependency syntax
+266|speech signal analysis
+267|training neural networks
+268|grammar checker
+269|information extraction
+270|linear discriminant analysis
+271|adversarial search
+272|propositional logic
+273|natural language processing intro
+274|parsing evaluation
+275|image retrieval
+276|loss function
+277|kernels
+278|nlp for the humanities
+279|policy gradient methods
+280|agent-based view of ai
+281|latent semantic indexing
+282|shift-reduce parsing
+283|first-order logic
+284|multi-agent systems
+285|support vector machines
+286|linear regression
+287|knowledge representation
+288|expectation maximization algorithm
+289|entailment
+290|kullback leibler divergence
+291|evaluation of dependency parsing
+292|singular value decomposition
+293|Markov Random Fields
+294|Variable Elimination
+295|Message Passing
+296|Gaussian graphical models
+297|State Space Models
+298|Belief Propagation
+299|Mean Field Approximation
+300|Dirichlet Processes
+301|Hilbert Space
+302|Kernel Graphical Models
+303|KKT conditions
+304|Lagrange duality
+305|Markov chains
+306|Unsupervised learning
+307|tools for dl
+308|Variations of GANs
+309|Meta-Learning
+310|Mixture Models
+311|Manifold Learning
+312|AlphaGo
+313|Autoencoders
+314|Restricted Boltzmann machine, deep belief networks
+315|Principal Component Analysis
+316|Sampling
+317|Canonical Correlation Analysis
+318|Visual QA
+319|Sequence to sequence
+320|ResNet
+321|Naive Bayes
+322|word embedding variations
+
+```
+
+### File: data/test/relation_types.json
+**Type:** json
+**Size:** 1640 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+{
+  "Compare": {
+    "label": "Compare",
+    "description": "Represents a relationship between two or more entities where a comparison is being made. For example, \"A is larger than B\" or \"X is more efficient than Y.\""
+  },
+  "Part-of": {
+    "label": "Part-of",
+    "description": "Denotes a relationship where one entity is a constituent or component of another. For instance, \"Wheel is a part of a Car.\""
+  },
+  "Conjunction": {
+    "label": "Conjunction",
+    "description": "Indicates a logical or semantic relationship where two or more entities are connected to form a group or composite idea. For example, \"Salt and Pepper.\""
+  },
+  "Evaluate-for": {
+    "label": "Evaluate-for",
+    "description": "Represents an evaluative relationship where one entity is assessed in the context of another. For example, \"A tool is evaluated for its effectiveness.\""
+  },
+  "Is-a-Prerequisite-of": {
+    "label": "Is-a-Prerequisite-of",
+    "description": "This dual-purpose relationship implies that one entity is either a characteristic of another or a required precursor for another. For instance, \"The ability to code is a prerequisite of software development.\""
+
+  },
+  "Used-for": {
+     "label": "Used-for",
+    "description": "Denotes a functional relationship where one entity is utilized in accomplishing or facilitating the other. For example, \"A hammer is used for driving nails.\""
+
+  },
+  "Hyponym-Of": {
+     "label":  "Hyponym-Of",
+    "description": "Establishes a hierarchical relationship where one entity is a more specific version or subtype of another. For instance, \"A Sedan is a hyponym of a Car.\""
+
+  }
+}
+
+
+
+```
+
+### File: data/test/raw/abstracts.txt
+**Type:** txt
+**Size:** 1199470 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+File too large or binary, content not captured.
+```
+
+### File: prompts/prompt_fusion.txt
+**Type:** txt
+**Size:** 1394 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+###Instruction: You are a knowledge graph builder. Now please fuse two sub-knowledge graphs about the concept "{concept}".
+Graph 1:
+{graph1}
+
+Graph 2:
+{graph2}
+
+Rules for Fusing the Graphs:
+1. Union the concepts and edges.
+2. If two concepts are similar, or they are referring to the same concept, combine them as one concept by keeping the meaningful or specific one. For example, "lstm" versus "long short-term memory",  please keep "long short-term memory".
+3. We only allow one relation to exist between two concepts, if there is a conflict,  read the following "##background" to help you keep the correct one. knowledge to keep the correct one.  For example, (ROUGE, Evaluate-for, question answering model) and (ROUGE,Used-for , question answering model) are considered to be conflicts.
+4. Once step 3 is done, consider every possible concept pair, which did not occur in step 2. For example, take a concept in G1, and match a concept from G2. And look at the "##background" ,  and summarize new triplets.
+
+Hint: the relation types and their definition. You can use it to do Step 3:
+    {relation_definitions}
+
+
+
+##Background: {background}
+
+###Output Instruction: Output the new merged data by listing the triplets.	Your answer should ONLY contain triplets in this format: (concept, relation, concept). No other explanations or numbering are needed. Only triplets, no intermediate results.
+```
+
+### File: prompts/prompt_step_00.txt
+**Type:** txt
+**Size:** 677 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+### Instruction:
+You are a domain expert in medicine and bio-chemistry, and now you are building a
+knowledge graph for this domain. Your task is to extract concepts from the scientific abstract (### Content).
+These concepts will be used as nodes/entities to build the knowledge graph.
+These concepts should be fine-grained: could be introduced by a lecture slide page, or a whole lecture,
+or possibly to have a Wikipedia page.
+
+Additional information:
+The knowledge graph will have the following relations:
+{relation_definitions}
+
+Provide the output as a list of comma seperated concepts, for example:
+concept1, concept2, concept3, concept4, concept5
+
+
+### Content: {abstracts}
+```
+
+### File: prompts/prompt_tpextraction.txt
+**Type:** txt
+**Size:** 1524 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+### Instruction:
+You are a domain expert in computer science, natural language processing, and now you are building a knowledge graph in this domain. Given a context (### Content), and a query concept (### Concept), do the following:
+1. Extract the query concept and some in-domain concepts from the context, these concepts should be fine-grained: could be introduced by a lecture slide page, or a whole lecture, or possibly to have a Wikipedia page.
+2. Determine the relationships between the query concept and the extracted concepts from Step 1, in a triplet format: (<head concept>, <relation>, <tail concept>). The relationship should be functional, aiding learners in understanding the knowledge. The query concept can be the head concept or tail concept. We define 7 types of the relations:
+    {relation_definitions}
+3. Some relation types are strictly directional. For example, "A tool is evaluated for B" indicates (A, Evaluate-for, B), NOT (B, Evaluate-for, A). Among the seven relation types, only "a) Compare" and "c) Conjunction" are not direction-sensitive.
+4. You can also extract triplets from the extracted concepts, and the query concept may not be necessary in the triplets.
+5. Your answer should ONLY contain a list of triplets, each triplet is in this format: (concept, relation, concept). For example: "(concept, relation, concept)(concept, relation, concept)." No numbering and other explanations are needed.
+6. If ### Content is empty, output None.
+
+
+### Content: {abstracts}
+
+### Concept: {concepts}
+```
+
+### File: test/test_fusion.ipynb
+**Type:** json
+**Size:** 9193 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+{
+ "cells": [
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:30:13.061457Z",
+     "start_time": "2024-09-01T07:30:12.873060Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "import os\n",
+    "import json\n",
+    "import pandas as pd\n",
+    "from langchain_core.prompts import ChatPromptTemplate\n",
+    "from graphs import get_nx_graph, verbalize_neighbors_triples_from_triples, verbalize_neighbors_triples_from_graph\n",
+    "from models import KnowledgeGraphLLM"
+   ],
+   "id": "b2ed867e157de175",
+   "outputs": [],
+   "execution_count": 47
+  },
+  {
+   "cell_type": "code",
+   "id": "initial_id",
+   "metadata": {
+    "collapsed": true,
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:07.031056Z",
+     "start_time": "2024-09-01T07:26:07.027119Z"
+    }
+   },
+   "source": [
+    "# load extracted triples\n",
+    "candidate_triples = []\n",
+    "for line in open(f'output/test/step-01.jsonl', 'r'):\n",
+    "    t = json.loads(line)\n",
+    "    candidate_triples.append((t['s'], t['p'], t['o']))\n",
+    "print(f'Loaded {len(candidate_triples)} triples.')\n",
+    "print(candidate_triples[:5])"
+   ],
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Loaded 4 triples.\n",
+      "[('OCR post-correction', 'Compare', 'spelling correction'), ('OCR post-correction', 'Part-of', 'sequence-to-sequence model'), ('Neural network models', 'Compare', 'Multi-task learning'), ('Neural network models', 'Evaluate-for', 'Shared layers')]\n"
+     ]
+    }
+   ],
+   "execution_count": 27
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:16.883041Z",
+     "start_time": "2024-09-01T07:26:16.867503Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# loading human-selected concepts\n",
+    "id_2_concept = {i: str(c['concept']) for i, c in\n",
+    "                pd.read_csv('data/refined_concepts.tsv', sep='|', header=None,\n",
+    "                            names=['id', 'concept'], index_col=0).iterrows()}\n",
+    "concept_2_id = {v: k for k, v in id_2_concept.items()}\n",
+    "print(id_2_concept[1])"
+   ],
+   "id": "4d7084593f4a7894",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "spelling correction\n"
+     ]
+    }
+   ],
+   "execution_count": 28
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:22.480160Z",
+     "start_time": "2024-09-01T07:26:22.476369Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# load text data\n",
+    "data = json.load(open('data/concept_abstracts_sample.json', 'r'))"
+   ],
+   "id": "d34192c5a3770125",
+   "outputs": [],
+   "execution_count": 29
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:23.408079Z",
+     "start_time": "2024-09-01T07:26:23.404799Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# load relation types\n",
+    "relation_def = json.load(open('data/relation_types.json'))\n",
+    "relation_types = list(relation_def.keys())\n",
+    "relation_2_id = {v: k for k, v in enumerate(relation_types)}\n",
+    "id_2_relation = {k: v for k, v in enumerate(relation_types)}"
+   ],
+   "id": "80451a6323286be",
+   "outputs": [],
+   "execution_count": 30
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:24.720609Z",
+     "start_time": "2024-09-01T07:26:24.714486Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# build the prerequisite-of graph\n",
+    "prerequisite_of_triples = []\n",
+    "with open('data/prerequisite-of_graph.tsv', 'r') as f:\n",
+    "    for line in f:\n",
+    "        s, p, o = line.strip().split('\\t')\n",
+    "        prerequisite_of_triples.append((str(s), str(p), str(o)))\n",
+    "\n",
+    "prerequisite_of_graph = get_nx_graph(prerequisite_of_triples, concept_2_id, relation_2_id)\n"
+   ],
+   "id": "79764d75081ef04b",
+   "outputs": [],
+   "execution_count": 31
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:28.108184Z",
+     "start_time": "2024-09-01T07:26:28.105680Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# initialize the prompt template\n",
+    "prompt_template_txt = open(\"prompts/prompt_fusion.txt\").read()\n",
+    "\n",
+    "prompt_template = ChatPromptTemplate.from_messages([\n",
+    "    (\"system\", \"You are a knowledge graph builder.\"),\n",
+    "    (\"user\", prompt_template_txt)\n",
+    "])"
+   ],
+   "id": "fe1911d8956459",
+   "outputs": [],
+   "execution_count": 33
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:26:34.721416Z",
+     "start_time": "2024-09-01T07:26:34.718989Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# verbalize the candidate triples\n",
+    "candidate_concept = \"spelling correction\"\n",
+    "candidate_subgraph = verbalize_neighbors_triples_from_triples(candidate_triples, candidate_concept)\n",
+    "\n",
+    "print(f'Candidate subgraph of {candidate_concept}: \\n', candidate_subgraph)"
+   ],
+   "id": "5d6976e6b7ed85b1",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Candidate subgraph of spelling correction: \n",
+      " (OCR post-correction,Compare,spelling correction)\n",
+      "\n"
+     ]
+    }
+   ],
+   "execution_count": 34
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:28:58.386054Z",
+     "start_time": "2024-09-01T07:28:58.383347Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "prerequisite_of_graph_subgraph = verbalize_neighbors_triples_from_graph(\n",
+    "        prerequisite_of_graph, candidate_concept, concept_2_id, id_2_concept, mode='bidirectional')\n",
+    "print(f'Prerequisite-of subgraph of {candidate_concept}: \\n', prerequisite_of_graph_subgraph)"
+   ],
+   "id": "a37a7f73d28d4df3",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Prerequisite-of subgraph of spelling correction: \n",
+      " (spelling correction,Is-a-Prerequisite-of,linguistics basics)\n",
+      "(spelling correction,Is-a-Prerequisite-of,chinese nlp)\n",
+      "(spelling correction,Is-a-Prerequisite-of,natural language processing intro)\n",
+      "\n"
+     ]
+    }
+   ],
+   "execution_count": 44
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:28:59.891588Z",
+     "start_time": "2024-09-01T07:28:59.888282Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "abstracts = ' '.join(\n",
+    "    data[candidate_concept]['abstracts']) if candidate_concept in data else ''\n"
+   ],
+   "id": "96698b1ede02e4ef",
+   "outputs": [],
+   "execution_count": 45
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:30:19.470291Z",
+     "start_time": "2024-09-01T07:30:19.461170Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "os.environ[\"OPENAI_API_KEY\"] = json.load(open('private_config.json'))['OPENAI_API_KEY']\n",
+    "# init the model\n",
+    "model = KnowledgeGraphLLM(model_name=\"gpt-3.5-turbo\",\n",
+    "                              max_tokens=400)"
+   ],
+   "id": "b05d842e391b983e",
+   "outputs": [],
+   "execution_count": 48
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:30:23.331602Z",
+     "start_time": "2024-09-01T07:30:21.602484Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "prompt = prompt_template.invoke(\n",
+    "            {\"concept\": candidate_concept,\n",
+    "             \"graph1\": candidate_subgraph,\n",
+    "             \"graph2\": prerequisite_of_graph_subgraph,\n",
+    "             \"background\": abstracts,\n",
+    "             \"relation_definitions\": '\\n'.join(\n",
+    "                 [f\"{rel_type}: {rel_data['description']}\" for rel_type, rel_data in\n",
+    "                  relation_def.items()])})\n",
+    "\n",
+    "# query the model\n",
+    "response = model.invoke(prompt)"
+   ],
+   "id": "cb238fc50c1fd107",
+   "outputs": [],
+   "execution_count": 49
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T07:32:18.356142Z",
+     "start_time": "2024-09-01T07:32:18.352543Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "for triple in json.loads(response):\n",
+    "    print(', '.join([triple['s'], triple['p'], triple['o']]))"
+   ],
+   "id": "4490fbcbf77fc2ff",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "OCR post-correction, Compare, spelling correction\n",
+      "spelling correction, Is-a-Prerequisite-of, linguistics basics\n",
+      "spelling correction, Is-a-Prerequisite-of, chinese nlp\n",
+      "spelling correction, Is-a-Prerequisite-of, natural language processing intro\n"
+     ]
+    }
+   ],
+   "execution_count": 53
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 2
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython2",
+   "version": "2.7.6"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+
+```
+
+### File: test/test_graph.ipynb
+**Type:** json
+**Size:** 13196 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+{
+ "cells": [
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:03:13.354231Z",
+     "start_time": "2024-09-01T08:03:13.352265Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "import json\n",
+    "import pandas as pd\n",
+    "from graphs import get_nx_graph, get_neighbors, get_2hop_neighbors, verbalize_neighbors_triples_from_graph, verbalize_neighbors_triples_from_triples"
+   ],
+   "id": "df428f3867617ce1",
+   "outputs": [],
+   "execution_count": 19
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:02:46.555070Z",
+     "start_time": "2024-09-01T08:02:46.545287Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# load sample data\n",
+    "# candidate graph\n",
+    "candidate_triples = []\n",
+    "STEP01_OUTPUT_FILE = f'output/test/step-01.jsonl'\n",
+    "for line in open(STEP01_OUTPUT_FILE, 'r'):\n",
+    "    t = json.loads(line)\n",
+    "    candidate_triples.append((t['s'], t['p'], t['o']))\n",
+    "id_2_concept = {i: c['concept'] for i, c in\n",
+    "                pd.read_csv('data/refined_concepts.tsv', sep='|', header=None,\n",
+    "                            names=['id', 'concept'], index_col=0).iterrows()}\n",
+    "concept_2_id = {c: i for i, c in id_2_concept.items()}\n",
+    " \n",
+    "relation_def = json.load(open('data/relation_types.json'))\n",
+    "relation_types = list(relation_def.keys())\n",
+    "relation_2_id = {v: k for k, v in enumerate(relation_types)}\n",
+    "    \n",
+    "# gold standard annotated graph\n",
+    "prerequisite_of_triples = []\n",
+    "with open('data/prerequisite-of_graph.tsv', 'r') as f:\n",
+    "    for line in f:\n",
+    "        s, p, o = line.strip().split('\\t')\n",
+    "        prerequisite_of_triples.append((s, p, o))"
+   ],
+   "id": "693876fda38c4f11",
+   "outputs": [],
+   "execution_count": 12
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:02:46.890355Z",
+     "start_time": "2024-09-01T08:02:46.887496Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# create nx graph from list of triples\n",
+    "graph = get_nx_graph(prerequisite_of_triples, concept_2_id, relation_2_id)"
+   ],
+   "id": "5d65090b8ae4e6e2",
+   "outputs": [],
+   "execution_count": 13
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:02:47.312611Z",
+     "start_time": "2024-09-01T08:02:47.310194Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "print(get_neighbors(graph, 'named entity recognition', concept_2_id, id_2_concept))\n",
+    "print(get_neighbors(graph, 'natural language processing intro', concept_2_id, id_2_concept, mode='outgoing'))\n",
+    "print(get_neighbors(graph, 'named entity recognition', concept_2_id, id_2_concept, mode='ingoing'))"
+   ],
+   "id": "df022cd5fcf66eb6",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "['linguistics basics', 'natural language processing intro']\n",
+      "['spelling correction', 'word sense disambiguation', 'semantic role labeling', 'chomsky hierarchy', 'named entity recognition', 'shallow parsing', 'grammar checker', 'language identification', 'information extraction', 'dialog systems', 'event detection', 'cky parsing', 'propositional logic', 'automated essay scoring', 'kernels', 'nlp for the humanities', 'semantic parsing', 'shift-reduce parsing', 'knowledge representation', 'entailment', 'machine translation', 'word embedding', 'chinese nlp', 'speech processing', 'discourse analysis', 'parsing', 'regular expressions', 'Sequence to sequence', 'sentence boundary recognition', 'document representation', 'penn treebank', 'lexicography', 'text generation', 'bio text mining', 'recommendation system', 'morphology and lexicon', 'edit distance', 'context free grammars', 'probabilistic context free grammars', 'graph-based nlp', 'sentence simplification', 'relation extraction', 'course introduction', 'vector representations', 'feature selection', 'nlp and vision', 'tokenization', 'language modeling', 'text mining', 'semantic similarity', 'noisy channel model', 'query expansion', 'word segmentation', 'text to speech generation']\n",
+      "['linguistics basics', 'natural language processing intro']\n"
+     ]
+    }
+   ],
+   "execution_count": 14
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:02:51.438410Z",
+     "start_time": "2024-09-01T08:02:51.435798Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "get_2hop_neighbors(graph, 'named entity recognition', concept_2_id, id_2_concept)",
+   "id": "8d3a4e86daf07eff",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['spelling correction',\n",
+       " 'word sense disambiguation',\n",
+       " 'semantic role labeling',\n",
+       " 'chomsky hierarchy',\n",
+       " 'shallow parsing',\n",
+       " 'grammar checker',\n",
+       " 'language identification',\n",
+       " 'information extraction',\n",
+       " 'dialog systems',\n",
+       " 'event detection',\n",
+       " 'cky parsing',\n",
+       " 'propositional logic',\n",
+       " 'automated essay scoring',\n",
+       " 'kernels',\n",
+       " 'nlp for the humanities',\n",
+       " 'semantic parsing',\n",
+       " 'shift-reduce parsing',\n",
+       " 'knowledge representation',\n",
+       " 'entailment',\n",
+       " 'computational phonology',\n",
+       " 'chinese nlp',\n",
+       " 'speech processing',\n",
+       " 'discourse analysis',\n",
+       " 'prosody',\n",
+       " 'Sequence to sequence',\n",
+       " 'sentence simplification',\n",
+       " 'tokenization',\n",
+       " 'machine translation',\n",
+       " 'word embedding',\n",
+       " 'parsing',\n",
+       " 'regular expressions',\n",
+       " 'sentence boundary recognition',\n",
+       " 'document representation',\n",
+       " 'penn treebank',\n",
+       " 'lexicography',\n",
+       " 'text generation',\n",
+       " 'bio text mining',\n",
+       " 'recommendation system',\n",
+       " 'morphology and lexicon',\n",
+       " 'edit distance',\n",
+       " 'context free grammars',\n",
+       " 'probabilistic context free grammars',\n",
+       " 'graph-based nlp',\n",
+       " 'speech synthesis',\n",
+       " 'relation extraction',\n",
+       " 'course introduction',\n",
+       " 'phonetics',\n",
+       " 'vector representations',\n",
+       " 'feature selection',\n",
+       " 'nlp and vision',\n",
+       " 'language modeling',\n",
+       " 'text mining',\n",
+       " 'semantic similarity',\n",
+       " 'noisy channel model',\n",
+       " 'query expansion',\n",
+       " 'word segmentation',\n",
+       " 'text to speech generation']"
+      ]
+     },
+     "execution_count": 16,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 16
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:03:34.021973Z",
+     "start_time": "2024-09-01T08:03:34.019754Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "print(verbalize_neighbors_triples_from_graph(graph, 'natural language processing intro', concept_2_id, id_2_concept, mode='outgoing'))\n",
+    "print(verbalize_neighbors_triples_from_graph(graph, 'named entity recognition', concept_2_id, id_2_concept))"
+   ],
+   "id": "f45077f3fa321907",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(natural language processing intro,Is-a-Prerequisite-of,spelling correction)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,word sense disambiguation)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,semantic role labeling)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,chomsky hierarchy)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,named entity recognition)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,shallow parsing)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,grammar checker)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,language identification)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,information extraction)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,dialog systems)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,event detection)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,cky parsing)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,propositional logic)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,automated essay scoring)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,kernels)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,nlp for the humanities)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,semantic parsing)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,shift-reduce parsing)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,knowledge representation)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,entailment)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,machine translation)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,word embedding)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,chinese nlp)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,speech processing)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,discourse analysis)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,parsing)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,regular expressions)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,Sequence to sequence)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,sentence boundary recognition)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,document representation)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,penn treebank)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,lexicography)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,text generation)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,bio text mining)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,recommendation system)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,morphology and lexicon)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,edit distance)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,context free grammars)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,probabilistic context free grammars)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,graph-based nlp)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,sentence simplification)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,relation extraction)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,course introduction)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,vector representations)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,feature selection)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,nlp and vision)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,tokenization)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,language modeling)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,text mining)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,semantic similarity)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,noisy channel model)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,query expansion)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,word segmentation)\n",
+      "(natural language processing intro,Is-a-Prerequisite-of,text to speech generation)\n",
+      "\n",
+      "None\n"
+     ]
+    }
+   ],
+   "execution_count": 21
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T08:03:25.223337Z",
+     "start_time": "2024-09-01T08:03:25.220494Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "concept_name = 'OCR post-correction'\n",
+    "verbalize_neighbors_triples_from_triples(candidate_triples, concept_name)"
+   ],
+   "id": "ee9288d3ccef55a3",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "'(OCR post-correction,Compare,spelling correction)\\n(OCR post-correction,Part-of,sequence-to-sequence model)\\n'"
+      ]
+     },
+     "execution_count": 20,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 20
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 2
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython2",
+   "version": "2.7.6"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+
+```
+
+### File: test/test_topic_extraction.ipynb
+**Type:** json
+**Size:** 18774 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+{
+ "cells": [
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:58:55.830793Z",
+     "start_time": "2024-09-09T01:58:55.826549Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "import nltk\n",
+    "import json\n",
+    "from tqdm import tqdm\n",
+    "import pandas as pd\n",
+    "from umap import UMAP\n",
+    "from bertopic import BERTopic\n",
+    "from sklearn.feature_extraction.text import CountVectorizer\n",
+    "from bertopic.vectorizers import ClassTfidfTransformer\n",
+    "from bertopic.representation import KeyBERTInspired\n",
+    "from sentence_transformers import SentenceTransformer\n",
+    "from nltk.stem import WordNetLemmatizer\n",
+    "from nltk.corpus import wordnet\n",
+    "from fuzzywuzzy import fuzz\n",
+    "from fuzzywuzzy import process"
+   ],
+   "id": "716184e9a2059464",
+   "outputs": [],
+   "execution_count": 48
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:38:51.353458Z",
+     "start_time": "2024-09-09T01:38:50.165426Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "nltk.download(\"wordnet\")\n",
+    "nltk.download(\"omw-1.4\")"
+   ],
+   "id": "b6612e1d6f514a41",
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[nltk_data] Downloading package wordnet to\n",
+      "[nltk_data]     /Users/moritzblum/nltk_data...\n",
+      "[nltk_data] Downloading package omw-1.4 to\n",
+      "[nltk_data]     /Users/moritzblum/nltk_data...\n"
+     ]
+    },
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 36,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 36
+  },
+  {
+   "cell_type": "code",
+   "id": "initial_id",
+   "metadata": {
+    "collapsed": true,
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:47:26.776460Z",
+     "start_time": "2024-09-09T00:47:26.715376Z"
+    }
+   },
+   "source": [
+    "# Read all data into a single dataframe\n",
+    "acl_files = [\n",
+    "    'data/nlp/raw/2017_ACL.csv',\n",
+    "    'data/nlp/raw/2018_ACL.csv',\n",
+    "    'data/nlp/raw/2019_ACL.csv',\n",
+    "    'data/nlp/raw/2020_ACL.csv',\n",
+    "    'data/nlp/raw/2021_ACL.csv',\n",
+    "    'data/nlp/raw/2022_ACL.csv',\n",
+    "    'data/nlp/raw/2023_ACL.csv'\n",
+    "]\n",
+    "\n",
+    "acl_data = pd.concat([pd.read_csv(file) for file in acl_files], ignore_index=True)"
+   ],
+   "outputs": [],
+   "execution_count": 4
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:47:40.281743Z",
+     "start_time": "2024-09-09T00:47:40.274539Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "acl_data.head()",
+   "id": "15d02189811bdcdc",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "                                 link  \\\n",
+       "0  https://aclanthology.org/P17-1001/   \n",
+       "1  https://aclanthology.org/P17-1002/   \n",
+       "2  https://aclanthology.org/P17-1003/   \n",
+       "3  https://aclanthology.org/P17-1004/   \n",
+       "4  https://aclanthology.org/P17-1005/   \n",
+       "\n",
+       "                                               title  \\\n",
+       "0  Adversarial Multi-task Learning for Text Class...   \n",
+       "1  Neural End-to-End Learning for Computational A...   \n",
+       "2  Neural Symbolic Machines: Learning Semantic Pa...   \n",
+       "3  Neural Relation Extraction with Multi-lingual ...   \n",
+       "4  Learning Structured Natural Language Represent...   \n",
+       "\n",
+       "                                            abstract  \n",
+       "0  Neural network models have shown their promisi...  \n",
+       "1  We investigate neural techniques for end-to-en...  \n",
+       "2  Harnessing the statistical power of neural net...  \n",
+       "3  Relation extraction has been widely used for f...  \n",
+       "4  We introduce a neural semantic parser which is...  "
+      ],
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>link</th>\n",
+       "      <th>title</th>\n",
+       "      <th>abstract</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>https://aclanthology.org/P17-1001/</td>\n",
+       "      <td>Adversarial Multi-task Learning for Text Class...</td>\n",
+       "      <td>Neural network models have shown their promisi...</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>https://aclanthology.org/P17-1002/</td>\n",
+       "      <td>Neural End-to-End Learning for Computational A...</td>\n",
+       "      <td>We investigate neural techniques for end-to-en...</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>https://aclanthology.org/P17-1003/</td>\n",
+       "      <td>Neural Symbolic Machines: Learning Semantic Pa...</td>\n",
+       "      <td>Harnessing the statistical power of neural net...</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>https://aclanthology.org/P17-1004/</td>\n",
+       "      <td>Neural Relation Extraction with Multi-lingual ...</td>\n",
+       "      <td>Relation extraction has been widely used for f...</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>https://aclanthology.org/P17-1005/</td>\n",
+       "      <td>Learning Structured Natural Language Represent...</td>\n",
+       "      <td>We introduce a neural semantic parser which is...</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ]
+     },
+     "execution_count": 5,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 5
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:48:26.928937Z",
+     "start_time": "2024-09-09T00:48:26.924701Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "texts = acl_data[\"abstract\"].astype(\"str\")\n",
+    "texts.shape"
+   ],
+   "id": "e89c8e3241afa188",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(4605,)"
+      ]
+     },
+     "execution_count": 6,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 6
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:54:31.855344Z",
+     "start_time": "2024-09-09T00:54:09.302149Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# create BERTopic Extractor\n",
+    "umap_model=UMAP(n_neighbors=20,n_components=50,metric=\"cosine\",min_dist=0.0,random_state=37)\n",
+    "vectorizer_model=CountVectorizer(ngram_range=(2,4),stop_words=\"english\")\n",
+    "ctfidf_model=ClassTfidfTransformer(reduce_frequent_words=False)\n",
+    "sentence_model=SentenceTransformer(\"sentence-transformers/all-mpnet-base-v2\")\n",
+    "representation_model = KeyBERTInspired()\n",
+    "\n",
+    "topic_model=BERTopic(verbose=True,\n",
+    "                     umap_model=umap_model,\n",
+    "                     ctfidf_model=ctfidf_model,\n",
+    "                     vectorizer_model=vectorizer_model,\n",
+    "                     embedding_model=sentence_model,\n",
+    "                     representation_model=representation_model,\n",
+    "                     nr_topics=50,\n",
+    "                     low_memory=True,\n",
+    "                     calculate_probabilities=False)"
+   ],
+   "id": "6f225ac52de049fe",
+   "outputs": [],
+   "execution_count": 9
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:57:11.873826Z",
+     "start_time": "2024-09-09T00:55:00.762603Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "topics, _ = topic_model.fit_transform(texts)",
+   "id": "a3c471fa1340f2b1",
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "2024-09-09 09:55:00,770 - BERTopic - Embedding - Transforming documents to embeddings.\n",
+      "Batches: 100%|██████████| 144/144 [01:15<00:00,  1.91it/s]\n",
+      "2024-09-09 09:56:16,186 - BERTopic - Embedding - Completed ✓\n",
+      "2024-09-09 09:56:16,188 - BERTopic - Dimensionality - Fitting the dimensionality reduction algorithm\n",
+      "OMP: Info #276: omp_set_nested routine deprecated, please use omp_set_max_active_levels instead.\n",
+      "2024-09-09 09:56:31,763 - BERTopic - Dimensionality - Completed ✓\n",
+      "2024-09-09 09:56:31,764 - BERTopic - Cluster - Start clustering the reduced embeddings\n",
+      "2024-09-09 09:56:31,973 - BERTopic - Cluster - Completed ✓\n",
+      "2024-09-09 09:56:31,973 - BERTopic - Representation - Extracting topics from clusters using representation models.\n",
+      "2024-09-09 09:56:58,538 - BERTopic - Representation - Completed ✓\n",
+      "2024-09-09 09:56:58,563 - BERTopic - Topic reduction - Reducing number of topics\n",
+      "2024-09-09 09:57:11,105 - BERTopic - Topic reduction - Reduced number of topics from 93 to 50\n"
+     ]
+    }
+   ],
+   "execution_count": 10
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:58:30.215692Z",
+     "start_time": "2024-09-09T00:58:30.208647Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "all_topics = topic_model.get_topics()",
+   "id": "8d243c70ae36ff59",
+   "outputs": [],
+   "execution_count": 11
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T00:58:48.941751Z",
+     "start_time": "2024-09-09T00:58:48.933672Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "concepts=[]\n",
+    "\n",
+    "for topic_num, keywords in all_topics.items():\n",
+    "    if topic_num != -1:\n",
+    "        topic_keywords = [word for word, value in keywords]\n",
+    "        concepts.extend(topic_keywords)"
+   ],
+   "id": "1e5943eb194005c8",
+   "outputs": [],
+   "execution_count": 12
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:00:18.277483Z",
+     "start_time": "2024-09-09T01:00:18.269076Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# remove duplicates\n",
+    "concepts = list(set(keyword.lower() for keyword in concepts))"
+   ],
+   "id": "f3eb13d59e9dfcd3",
+   "outputs": [],
+   "execution_count": 15
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:00:19.199669Z",
+     "start_time": "2024-09-09T01:00:19.193676Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "len(concepts)",
+   "id": "1ed0b3ffd88ba32e",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "476"
+      ]
+     },
+     "execution_count": 16,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 16
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:35:13.564916Z",
+     "start_time": "2024-09-09T01:35:13.560333Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "with open(\"data/nlp/extracted_concepts.tsv\", \"w\") as f:\n",
+    "    for id, concept in enumerate(concepts, 1):\n",
+    "        f.write(f\"{id}|{concept}\\n\")"
+   ],
+   "id": "e8712f254b46b925",
+   "outputs": [],
+   "execution_count": 26
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:35:38.613584Z",
+     "start_time": "2024-09-09T01:35:38.602736Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "extracted_concepts = pd.read_csv(\"data/nlp/extracted_concepts.tsv\", delimiter=\"|\", header=None)\n",
+    "extracted_concepts = extracted_concepts[1].tolist()\n",
+    "\n",
+    "gold_concepts = pd.read_csv(\"data/nlp/raw/gold_concepts.tsv\", delimiter=\"|\", header=None)\n",
+    "gold_concepts = gold_concepts[1].tolist()"
+   ],
+   "id": "3542e95763a9f4dc",
+   "outputs": [],
+   "execution_count": 28
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:35:49.327831Z",
+     "start_time": "2024-09-09T01:35:49.325483Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "len(extracted_concepts)",
+   "id": "d8a2c0ff20265daf",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "476"
+      ]
+     },
+     "execution_count": 30,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 30
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:38:25.021842Z",
+     "start_time": "2024-09-09T01:38:25.018046Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "lemmatizer = WordNetLemmatizer()\n",
+    "\n",
+    "def singularize_concept(concept):\n",
+    "    words = concept.split()\n",
+    "    singular_words = [lemmatizer.lemmatize(word, wordnet.NOUN) for word in words]\n",
+    "    return ' '.join(singular_words)"
+   ],
+   "id": "66c49b69b7589557",
+   "outputs": [],
+   "execution_count": 34
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:40:27.954359Z",
+     "start_time": "2024-09-09T01:40:27.939436Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# singularize concepts\n",
+    "gold_concept = [singularize_concept(concept) for concept in gold_concepts]\n",
+    "extracted_concept = [singularize_concept(concept) for concept in extracted_concepts]\n",
+    "\n",
+    "# convert to lowercase\n",
+    "gold_concept = [concept.lower() for concept in gold_concept]\n",
+    "extracted_concept = [concept.lower() for concept in extracted_concept]"
+   ],
+   "id": "ef916e85711040cf",
+   "outputs": [],
+   "execution_count": 38
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:41:43.131463Z",
+     "start_time": "2024-09-09T01:41:43.116330Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# create dataframe (column label indicated the source of the concept: 0=extracted, 1=gold)\n",
+    "df_old = pd.DataFrame(extracted_concept, columns=[\"concept\"])\n",
+    "df_old[\"label\"] = 0\n",
+    "\n",
+    "df_new = pd.DataFrame(gold_concept, columns=[\"concept\"])\n",
+    "df_new[\"label\"] = 1\n",
+    "\n",
+    "df = pd.concat([df_old, df_new])\n",
+    "df = df.sort_values(by=\"label\")\n",
+    "\n",
+    "df = df.drop_duplicates(subset=\"concept\", keep=\"first\")"
+   ],
+   "id": "7d9a7292be184896",
+   "outputs": [],
+   "execution_count": 39
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:41:48.384543Z",
+     "start_time": "2024-09-09T01:41:48.380354Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "df.shape",
+   "id": "373dd9cec439807c",
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(945, 2)"
+      ]
+     },
+     "execution_count": 40,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "execution_count": 40
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-09T01:54:07.044880Z",
+     "start_time": "2024-09-09T01:44:59.125995Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# reduce the text dataset to only texts containing the concepts\n",
+    "\n",
+    "def filter_abstracts_by_term(term, abstracts, threshold=70):\n",
+    "    filtered_abstracts = []\n",
+    "    for abstract in abstracts:\n",
+    "        if isinstance(abstract, str):\n",
+    "            if fuzz.partial_ratio(term.lower(), abstract.lower()) >= threshold:\n",
+    "                filtered_abstracts.append(abstract)\n",
+    "    return filtered_abstracts\n",
+    "\n",
+    "concept_abstracts = {}\n",
+    "for index, row in tqdm(df.iterrows(), desc=\"Processing concepts\", total=df.shape[0]):\n",
+    "    concept = row[\"concept\"]\n",
+    "    label = row[\"label\"]\n",
+    "    filtered_abstracts = filter_abstracts_by_term(concept, texts)\n",
+    "    concept_abstracts[concept] = {\n",
+    "        \"abstracts\": filtered_abstracts,\n",
+    "        \"label\": label\n",
+    "    }"
+   ],
+   "id": "493357d24acf2184",
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "Processing concepts: 100%|██████████| 945/945 [0
+... [Content Truncated] ...
+```
+
+### File: test/test_tpextraction.ipynb
+**Type:** json
+**Size:** 13537 bytes
+**Created:** 2024-11-07 04:24:30 UTC
+**Modified:** 2024-11-07 04:24:30 UTC
+#### Content:
+```
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "id": "initial_id",
+   "metadata": {
+    "collapsed": true,
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:52:25.289810Z",
+     "start_time": "2024-09-01T06:52:24.962993Z"
+    }
+   },
+   "source": [
+    "import os\n",
+    "import json\n",
+    "from langchain_core.prompts import ChatPromptTemplate  \n",
+    "from models import KnowledgeGraphLLM"
+   ],
+   "outputs": [],
+   "execution_count": 35
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:43:31.139025Z",
+     "start_time": "2024-09-01T06:43:31.133711Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# load sample data\n",
+    "data = json.load(open('data/test/concept_abstracts_sample.json', 'r'))\n",
+    "relation_def = json.load(open('data/relation_types.json'))\n",
+    "relation_types = list(relation_def.keys())"
+   ],
+   "id": "410c61e96651269",
+   "outputs": [],
+   "execution_count": 5
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:55:54.583270Z",
+     "start_time": "2024-09-01T06:55:54.574458Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "# initialize the prompt template\n",
+    "prompt_template_txt = open(\"prompts/prompt_step_01.txt\").read()\n",
+    "prompt_template = ChatPromptTemplate.from_messages([\n",
+    "    (\"system\", \"You are a knowledge graph builder.\"),\n",
+    "    (\"user\", prompt_template_txt)\n",
+    "])\n",
+    "\n",
+    "print('Prompt template', prompt_template)"
+   ],
+   "id": "623fe041dbf5b05a",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Prompt template input_variables=['abstracts', 'concepts', 'relation_definitions'] messages=[SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='You are a knowledge graph builder.')), HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['abstracts', 'concepts', 'relation_definitions'], template='### Instruction:\\nYou are a domain expert in computer science, natural language processing, and now you are building a knowledge graph in this domain. Given a context (### Content), and a query concept (### Concept), do the following:\\n1. Extract the query concept and some in-domain concepts from the context, these concepts should be fine-grained: could be introduced by a lecture slide page, or a whole lecture, or possibly to have a Wikipedia page.\\n2. Determine the relationships between the query concept and the extracted concepts from Step 1, in a triplet format: (<head concept>, <relation>, <tail concept>). The relationship should be functional, aiding learners in understanding the knowledge. The query concept can be the head concept or tail concept. We define 7 types of the relations:\\n    {relation_definitions}\\n3. Some relation types are strictly directional. For example, \"A tool is evaluated for B\" indicates (A, Evaluate-for, B), NOT (B, Evaluate-for, A). Among the seven relation types, only \"a) Compare\" and \"c) Conjunction\" are not direction-sensitive.\\n4. You can also extract triplets from the extracted concepts, and the query concept may not be necessary in the triplets.\\n5. Your answer should ONLY contain a list of triplets, each triplet is in this format: (concept, relation, concept). For example: \"(concept, relation, concept)(concept, relation, concept).\" No numbering and other explanations are needed.\\n6. If ### Content is empty, output None.\\n\\n\\n### Content: {abstracts}\\n\\n### Concept: {concepts}'))]\n"
+     ]
+    }
+   ],
+   "execution_count": 43
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:50:30.349486Z",
+     "start_time": "2024-09-01T06:50:30.339808Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "concept_name = \"spelling correction\"\n",
+    "print('Sample concept:', concept_name)\n",
+    "abstracts = ' '.join(data[concept_name]['abstracts'])\n",
+    "print('Used abstracts:', abstracts[:500])\n",
+    "\n",
+    "# instantiate the prompt template\n",
+    "prompt = prompt_template.invoke(\n",
+    "    {\"abstracts\": abstracts[:10000],\n",
+    "     \"concepts\": [concept_name],\n",
+    "     \"relation_definitions\": '\\n'.join(\n",
+    "         [f\"{rel_type}: {rel_data['description']}\" for rel_type, rel_data in\n",
+    "          relation_def.items()])})"
+   ],
+   "id": "37752d971f09383a",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Sample concept: spelling correction\n",
+      "Used abstracts: We propose a novel approach to OCR post-correction that exploits repeated texts in large corpora both as a source of noisy target outputs for unsupervised training and as a source of evidence when decoding. A sequence-to-sequence model with attention is applied for single-input correction, and a new decoder with multi-input attention averaging is developed to search for consensus among multiple sequences. We design two ways of training the correction model without human annotation, either traini\n"
+     ]
+    }
+   ],
+   "execution_count": 34
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:56:08.182229Z",
+     "start_time": "2024-09-01T06:56:08.178620Z"
+    }
+   },
+   "cell_type": "code",
+   "source": "print('Prompt:', prompt)",
+   "id": "f7c8352db7301dcd",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Prompt: messages=[SystemMessage(content='You are a knowledge graph builder.'), HumanMessage(content='### Instruction:\\nYou are a domain expert in computer science, natural language processing, and now you are building a knowledge graph in this domain. Given a context (### Content), and a query concept (### Concept), do the following:\\n1. Extract the query concept and some in-domain concepts from the context, these concepts should be fine-grained: could be introduced by a lecture slide page, or a whole lecture, or possibly to have a Wikipedia page.\\n2. Determine the relationships between the query concept and the extracted concepts from Step 1, in a triplet format: (<head concept>, <relation>, <tail concept>). The relationship should be functional, aiding learners in understanding the knowledge. The query concept can be the head concept or tail concept. We define 7 types of the relations:\\n    Compare: Represents a relationship between two or more entities where a comparison is being made. For example, \"A is larger than B\" or \"X is more efficient than Y.\"\\nPart-of: Denotes a relationship where one entity is a constituent or component of another. For instance, \"Wheel is a part of a Car.\"\\nConjunction: Indicates a logical or semantic relationship where two or more entities are connected to form a group or composite idea. For example, \"Salt and Pepper.\"\\nEvaluate-for: Represents an evaluative relationship where one entity is assessed in the context of another. For example, \"A tool is evaluated for its effectiveness.\"\\nIs-a-Prerequisite-of: This dual-purpose relationship implies that one entity is either a characteristic of another or a required precursor for another. For instance, \"The ability to code is a prerequisite of software development.\"\\nUsed-for: Denotes a functional relationship where one entity is utilized in accomplishing or facilitating the other. For example, \"A hammer is used for driving nails.\"\\nHyponym-Of: Establishes a hierarchical relationship where one entity is a more specific version or subtype of another. For instance, \"A Sedan is a hyponym of a Car.\"\\n3. Some relation types are strictly directional. For example, \"A tool is evaluated for B\" indicates (A, Evaluate-for, B), NOT (B, Evaluate-for, A). Among the seven relation types, only \"a) Compare\" and \"c) Conjunction\" are not direction-sensitive.\\n4. You can also extract triplets from the extracted concepts, and the query concept may not be necessary in the triplets.\\n5. Your answer should ONLY contain a list of triplets, each triplet is in this format: (concept, relation, concept). For example: \"(concept, relation, concept)(concept, relation, concept).\" No numbering and other explanations are needed.\\n6. If ### Content is empty, output None.\\n\\n\\n### Content: We propose a novel approach to OCR post-correction that exploits repeated texts in large corpora both as a source of noisy target outputs for unsupervised training and as a source of evidence when decoding. A sequence-to-sequence model with attention is applied for single-input correction, and a new decoder with multi-input attention averaging is developed to search for consensus among multiple sequences. We design two ways of training the correction model without human annotation, either training to match noisily observed textual variants or bootstrapping from a uniform error model. On two corpora of historical newspapers and books, we show that these unsupervised techniques cut the character and word error rates nearly in half on single inputs and, with the addition of multi-input decoding, can rival supervised methods. The quality of a counseling intervention relies highly on the active collaboration between clients and counselors. In this paper, we explore several linguistic aspects of the collaboration process occurring during counseling conversations. Specifically, we address the differences between high-quality and low-quality counseling. Our approach examines participants’ turn-by-turn interaction, their linguistic alignment, the sentiment expressed by speakers during the conversation, as well as the different topics being discussed. Our results suggest important language differences in low- and high-quality counseling, which we further use to derive linguistic features able to capture the differences between the two groups. These features are then used to build automatic classifiers that can predict counseling quality with accuracies of up to 88%. The Minecraft Collaborative Building Task is a two-player game in which an Architect (A) instructs a Builder (B) to construct a target structure in a simulated Blocks World Environment. We define the subtask of predicting correct action sequences (block placements and removals) in a given game context, and show that capturing B’s past actions as well as B’s perspective leads to a significant improvement in performance on this challenging language understanding problem.\\n\\n### Concept: [\\'spelling correction\\']')]\n"
+     ]
+    }
+   ],
+   "execution_count": 44
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:52:59.073922Z",
+     "start_time": "2024-09-01T06:52:55.900977Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "os.environ[\"OPENAI_API_KEY\"] = json.load(open('private_config.json'))['OPENAI_API_KEY']\n",
+    "# init the model\n",
+    "model = KnowledgeGraphLLM(model_name=\"nlp_gpt-3.5-turbo\",\n",
+    "                              max_tokens=400)\n",
+    "\n",
+    "# query the model\n",
+    "response = model.invoke(prompt)"
+   ],
+   "id": "82dfc02974d665ef",
+   "outputs": [],
+   "execution_count": 36
+  },
+  {
+   "metadata": {
+    "ExecuteTime": {
+     "end_time": "2024-09-01T06:55:30.476100Z",
+     "start_time": "2024-09-01T06:55:30.472966Z"
+    }
+   },
+   "cell_type": "code",
+   "source": [
+    "print('Extracted triples:')\n",
+    "for triple in json.loads(response):\n",
+    "    print(', '.join([triple['s'], triple['p'], triple['o']]))"
+   ],
+   "id": "cb4b7ebe3a92879b",
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Extracted triples:\n",
+      "OCR post-correction, Compare, spelling correction\n",
+      "OCR post-correction, Evaluate-for, training the correction model without human annotation\n",
+      "OCR post-correction, Evaluate-for, bootstrapping from a uniform error model\n",
+      "OCR post-correction, Used-for, cutting the character and word error rates\n",
+      "counseling intervention, Is-a-Prerequisite-of, active collaboration between clients and counselors\n",
+      "counseling intervention, Compare, collaboration process during counseling conversations\n",
+      "counseling intervention, Compare, differences between high-quality and low-quality counseling\n",
+      "counseling intervention, Evaluate-for, examining participants’ turn-by-turn interaction\n",
+      "counseling intervention, Evaluate-for, deriving linguistic features to capture differences\n",
+      "counseling intervention, Used-for, building automatic classifiers to predict counseling quality\n",
+      "Minecraft Collaborative Building Task, Compare, two-player game\n",
+      "Minecraft Collaborative Building Task, Compare, predicting correct action sequences\n",
+      "Minecraft Collaborative Building Task, Compare, capturing Builder's past actions\n",
+      "Minecraft Collaborative Building Task, Compare, Builder's perspective\n"
+     ]
+    }
+   ],
+   "execution_count": 42
+  },
+  {
+   "metadata": {},
+   "cell_type": "code",
+   "outputs": [],
+   "execution_count": null,
+   "source": "",
+   "id": "ce7dddcc60b9182f"
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 2
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython2",
+   "version": "2.7.6"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+
+```
+
