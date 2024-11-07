@@ -7,7 +7,7 @@ Graphusion is a pipeline that extract Knowledge Graph triples from text.
 
 ## CITATION
 
-- I have deep respect for the creators of this repo and authors of the related [AGENTiGraph](https://arxiv.org/abs/2410.11531) paper.
+- I have deep respect for the [creators of this repo](https://anonymous.4open.science/r/CGPrompt-C9C7/readme.md) and authors of the related [AGENTiGraph](https://arxiv.org/abs/2410.11531) paper.
 - The DiscoverAI YouTube channel also had an interesting video highlighting the various use cases and diverse backgrounds of the authors of the paper:  https://www.youtube.com/watch?v=tB5s7Q-8DsE
 
 ```txt
