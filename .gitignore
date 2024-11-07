@@ -1,0 +1,8 @@
+private_config.json
+.idea
+.DS_Store
+data/*
+!data/test
+output
+.venv/
+
